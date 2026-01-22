@@ -13,6 +13,33 @@ from frappe.desk.form.utils import get_pdf_link
 from frappe_whatsapp.utils import get_whatsapp_account
 
 class WhatsAppTemplates(Document):
+    # begin: auto-generated types
+    # This code is auto-generated. Do not modify anything in this block.
+
+    from typing import TYPE_CHECKING
+
+    if TYPE_CHECKING:
+        from frappe.types import DF
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_button.whatsapp_button import WhatsAppButton
+
+        actual_name: DF.Data | None
+        buttons: DF.Table[WhatsAppButton]
+        category: DF.Literal["", "TRANSACTIONAL", "MARKETING", "OTP", "UTILITY", "AUTHENTICATION"]
+        field_names: DF.SmallText | None
+        footer: DF.Data | None
+        for_doctype: DF.Link | None
+        header: DF.Data | None
+        header_type: DF.Literal["", "TEXT", "DOCUMENT", "IMAGE"]
+        id: DF.Data | None
+        language: DF.Link
+        language_code: DF.Data | None
+        sample: DF.Attach | None
+        sample_values: DF.SmallText | None
+        status: DF.Data | None
+        template: DF.Code
+        template_name: DF.Data
+        whatsapp_account: DF.Link | None
+    # end: auto-generated types
     """Create whatsapp template."""
 
     def validate(self):
