@@ -14,7 +14,7 @@ def run_server_script_for_doc_event(doc, event):
 
     if frappe.flags.in_migrate:
         return
-    
+
     if frappe.flags.in_uninstall:
         return
 
@@ -25,10 +25,12 @@ def run_server_script_for_doc_event(doc, event):
     if notification:
         # run all scripts for this doctype + event
         for notification_name in notification:
-            frappe.get_doc(
+            from typing import cast
+            from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_notification.whatsapp_notification import WhatsAppNotification  # noqa: F401
+            cast(WhatsAppNotification, frappe.get_doc(
                 "WhatsApp Notification",
                 notification_name
-            ).send_template_message(doc)
+            )).send_template_message(doc)
 
 
 def get_notifications_map():

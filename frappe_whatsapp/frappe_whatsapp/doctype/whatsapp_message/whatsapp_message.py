@@ -121,7 +121,7 @@ class WhatsAppMessage(Document):
 
     """Record last sender app"""
     def after_insert(self):
-        if (self.type == "Outgoing" and self.source_app and self.to and
+        if (self.type == "Outgoing" and self.source_app and
                 self.to and self.whatsapp_account):
             set_last_sender_app(
                 whatsapp_account=self.whatsapp_account,
