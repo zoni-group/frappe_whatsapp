@@ -8,6 +8,7 @@ from typing import cast
 from frappe_whatsapp.utils import get_whatsapp_account
 from frappe_whatsapp.utils.routing import get_last_sender_app
 
+
 @frappe.whitelist(allow_guest=True)
 def webhook():
     """Meta webhook."""
@@ -105,7 +106,7 @@ def post():
                     "message_id": message['id'],
                     "content_type": "reaction",
                     "profile_name": sender_profile_name,
-                    "whatsapp_account": whatsapp_account.name
+                    "whatsapp_account": whatsapp_account.name,
                     "routed_app": last_app,
                 }).insert(ignore_permissions=True)
             elif message_type == 'interactive':
