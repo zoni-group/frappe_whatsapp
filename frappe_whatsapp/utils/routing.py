@@ -36,6 +36,7 @@ def set_last_sender_app(
     else:
         doc = frappe.get_doc({
             "doctype": ROUTE_DOCTYPE,
+            "name": doc_name,
             "whatsapp_account": whatsapp_account,
             "contact_number": contact,
             **values
@@ -98,7 +99,7 @@ def forward_incoming_to_app(*, incoming_message_doc):
         headers={
             "Content-Type": "application/json",
             # Add signature or auth headers if needed
-            "X-WhatsaApp-App-ID": app.app_id or ""
+            "X-WhatsApp-App-ID": app.app_id or ""
         })
 
 

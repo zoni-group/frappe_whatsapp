@@ -12,6 +12,7 @@ from frappe.desk.form.utils import get_pdf_link
 
 from frappe_whatsapp.utils import get_whatsapp_account
 
+
 class WhatsAppTemplates(Document):
     # begin: auto-generated types
     # This code is auto-generated. Do not modify anything in this block.
@@ -260,7 +261,7 @@ class WhatsAppTemplates(Document):
 
     def get_header(self):
         """Get header format."""
-        header = {"type": "header", "format": self.header_type}
+        header = {"type": "HEADER", "format": self.header_type}
         if self.header_type == "TEXT":
             header["text"] = self.header
             if self.sample:
