@@ -100,3 +100,19 @@ def forward_incoming_to_app(*, incoming_message_doc):
             # Add signature or auth headers if needed
             "X-WhatsaApp-App-ID": app.app_id or ""
         })
+
+
+def forward_incoming_to_app_async(*, incoming_message_name: str):
+    frappe.enqueue(
+        "frappe_whatsapp.utils.routing.forward_incoming_to_app_by_name",
+        queue="short",
+        incoming_message_name=incoming_message_name,
+        enqueue_after_commit=True
+    )
+
+
+def forward_incoming_to_app_by_name(*, incoming_message_name: str):
+    incoming_message_doc = frappe.get_doc(
+        "WhatsApp Message", incoming_message_name)
+    forward_incoming_to_app(
+        incoming_message_doc=incoming_message_doc)
