@@ -9,6 +9,31 @@ from frappe.integrations.utils import make_post_request, make_request
 
 
 class WhatsAppFlow(Document):
+    # begin: auto-generated types
+    # This code is auto-generated. Do not modify anything in this block.
+
+    from typing import TYPE_CHECKING
+
+    if TYPE_CHECKING:
+        from frappe.types import DF
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow_field.whatsapp_flow_field import WhatsAppFlowField
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow_screen.whatsapp_flow_screen import WhatsAppFlowScreen
+
+        category: DF.Literal["SIGN_UP", "SIGN_IN", "APPOINTMENT_BOOKING", "LEAD_GENERATION", "CONTACT_US", "CUSTOMER_SUPPORT", "SURVEY", "OTHER"]
+        data_api_version: DF.Literal["7.3", "7.2", "7.1", "7.0", "6.3", "6.2", "6.1", "6.0", "5.1"]
+        description: DF.SmallText | None
+        endpoint_uri: DF.Data | None
+        fields: DF.Table[WhatsAppFlowField]
+        flow_cta: DF.Data | None
+        flow_id: DF.Data | None
+        flow_json: DF.Code | None
+        flow_name: DF.Data
+        preview_url: DF.Data | None
+        screens: DF.Table[WhatsAppFlowScreen]
+        status: DF.Literal["Draft", "Published", "Deprecated", "Blocked", "Throttled"]
+        whatsapp_account: DF.Link
+    # end: auto-generated types
+
     def before_save(self):
         """Generate flow JSON before saving."""
         self.flow_json = json.dumps(self.generate_flow_json(), indent=2)

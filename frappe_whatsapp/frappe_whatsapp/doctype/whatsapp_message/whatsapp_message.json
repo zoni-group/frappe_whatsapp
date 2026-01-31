@@ -41,7 +41,11 @@
   "reference_doctype",
   "bulk_message_reference",
   "column_break_efrb",
-  "reference_name"
+  "reference_name",
+  "section_break_fs5x",
+  "source_app",
+  "routed_app",
+  "external_reference"
  ],
  "fields": [
   {
@@ -58,6 +62,7 @@
    "in_standard_filter": 1,
    "label": "Type",
    "options": "Outgoing\nIncoming",
+   "search_index": 1,
    "set_only_once": 1
   },
   {
@@ -74,6 +79,7 @@
    "fieldname": "to",
    "fieldtype": "Data",
    "label": "TO ",
+   "search_index": 1,
    "set_only_once": 1
   },
   {
@@ -81,6 +87,7 @@
    "fieldname": "from",
    "fieldtype": "Data",
    "label": "From",
+   "search_index": 1,
    "set_only_once": 1
   },
   {
@@ -155,12 +162,12 @@
    "label": "Attach"
   },
   {
-   "fieldname": "buttons",
-   "fieldtype": "JSON",
-   "label": "Buttons",
    "default": "{}",
    "depends_on": "eval:doc.content_type=='interactive'",
-   "description": "JSON array: [{\"id\": \"yes\", \"title\": \"Yes\"}, {\"id\": \"no\", \"title\": \"No\"}]"
+   "description": "JSON array: [{\"id\": \"yes\", \"title\": \"Yes\"}, {\"id\": \"no\", \"title\": \"No\"}]",
+   "fieldname": "buttons",
+   "fieldtype": "JSON",
+   "label": "Buttons"
   },
   {
    "fieldname": "section_break_iyjf",
@@ -218,7 +225,8 @@
    "fieldname": "whatsapp_account",
    "fieldtype": "Link",
    "label": "WhatsApp Account",
-   "options": "WhatsApp Account"
+   "options": "WhatsApp Account",
+   "search_index": 1
   },
   {
    "collapsible": 1,
@@ -272,16 +280,52 @@
    "fieldtype": "JSON",
    "label": "Flow Response Data",
    "read_only": 1
+  },
+  {
+   "fieldname": "section_break_fs5x",
+   "fieldtype": "Section Break"
+  },
+  {
+   "description": "who triggered this outgoing message",
+   "fieldname": "source_app",
+   "fieldtype": "Link",
+   "label": "Source App",
+   "options": "WhatsApp Client App"
+  },
+  {
+   "description": "who should receive this incoming message",
+   "fieldname": "routed_app",
+   "fieldtype": "Link",
+   "label": "Routed App",
+   "options": "WhatsApp Client App"
+  },
+  {
+   "description": "The sender app\u2019s own message id / correlation id",
+   "fieldname": "external_reference",
+   "fieldtype": "Data",
+   "label": "External Reference"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-08-20 15:13:42.233969",
+ "modified": "2026-01-21 16:13:42.201539",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Message",
  "owner": "Administrator",
  "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "WhatsApp Chat Agent",
+   "share": 1,
+   "write": 1
+  },
   {
    "create": 1,
    "delete": 1,

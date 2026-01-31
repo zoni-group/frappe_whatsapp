@@ -5,10 +5,72 @@ import frappe
 from frappe import _, throw
 from frappe.model.document import Document
 from frappe.integrations.utils import make_post_request
+from frappe.utils import get_url
+from typing import cast, Any
+from frappe_whatsapp.utils.routing import set_last_sender_app
 
 from frappe_whatsapp.utils import get_whatsapp_account, format_number
 
+
+def _get_integration_request_json() -> dict:
+    integration_request = getattr(frappe.flags, "integration_request", None)
+    if not integration_request:
+        return {}
+
+    json_method = getattr(integration_request, "json", None)
+    if not callable(json_method):
+        return {}
+
+    try:
+        data = json_method()
+    except Exception:
+        return {}
+
+    return data if isinstance(data, dict) else {}
+
+
 class WhatsAppMessage(Document):
+    # begin: auto-generated types
+    # This code is auto-generated. Do not modify anything in this block.
+
+    from typing import TYPE_CHECKING
+
+    if TYPE_CHECKING:
+        from frappe.types import DF
+
+        attach: DF.Attach | None
+        body_param: DF.JSON | None
+        bulk_message_reference: DF.Data | None
+        buttons: DF.JSON | None
+        content_type: DF.Literal["text", "document", "image", "video", "audio", "flow", "reaction", "location", "contact", "button", "interactive"]
+        conversation_id: DF.Data | None
+        external_reference: DF.Data | None
+        flow: DF.Link | None
+        flow_cta: DF.Data | None
+        flow_response: DF.JSON | None
+        flow_screen: DF.Data | None
+        flow_token: DF.Data | None
+        is_reply: DF.Check
+        label: DF.Data | None
+        message: DF.HTMLEditor | None
+        message_id: DF.Data | None
+        message_type: DF.Literal["Manual", "Template"]
+        profile_name: DF.Data | None
+        reference_doctype: DF.Link | None
+        reference_name: DF.DynamicLink | None
+        reply_to_message_id: DF.Data | None
+        routed_app: DF.Link | None
+        source_app: DF.Link | None
+        status: DF.Data | None
+        template: DF.Link | None
+        template_header_parameters: DF.SmallText | None
+        template_parameters: DF.SmallText | None
+        to: DF.Data | None
+        type: DF.Literal["Outgoing", "Incoming"]
+        use_template: DF.Check
+        whatsapp_account: DF.Link | None
+    # end: auto-generated types
+
     def validate(self):
         self.set_whatsapp_account()
 
@@ -27,8 +89,11 @@ class WhatsAppMessage(Document):
             and from_number
             and frappe.db.exists("WhatsApp Profiles", {"number": from_number})
         ):
-            profile_id = frappe.get_value("WhatsApp Profiles", {"number": from_number}, "name")
-            frappe.db.set_value("WhatsApp Profiles", profile_id, "profile_name", self.profile_name)
+            profile_id = frappe.get_value(
+                "WhatsApp Profiles", {"number": from_number}, "name")
+            frappe.db.set_value(
+                "WhatsApp Profiles",
+                profile_id, "profile_name", self.profile_name)
 
     def create_whatsapp_profile(self):
         number = format_number(self.get("from") or self.to)
@@ -43,12 +108,27 @@ class WhatsAppMessage(Document):
     def set_whatsapp_account(self):
         """Set whatsapp account to default if missing"""
         if not self.whatsapp_account:
-            account_type = 'outgoing' if self.type == 'Outgoing' else 'incoming'
-            default_whatsapp_account = get_whatsapp_account(account_type=account_type)
+            account_type = (
+                'outgoing' if self.type == 'Outgoing' else 'incoming')
+            default_whatsapp_account = get_whatsapp_account(
+                account_type=account_type)
             if not default_whatsapp_account:
-                throw(_("Please set a default outgoing WhatsApp Account or Select available WhatsApp Account"))
+                throw(_(
+                    "Please set a default outgoing WhatsApp Account"
+                    " or Select available WhatsApp Account"))
             else:
                 self.whatsapp_account = default_whatsapp_account.name
+
+    """Record last sender app"""
+    def after_insert(self):
+        if (self.type == "Outgoing" and self.source_app and
+                self.to and self.whatsapp_account):
+            set_last_sender_app(
+                whatsapp_account=self.whatsapp_account,
+                to_number=self.to,
+                source_app=str(self.source_app),
+                message_name=self.name,
+            )
 
     """Send whats app messages."""
     def before_insert(self):
@@ -56,7 +136,7 @@ class WhatsAppMessage(Document):
         self.set_whatsapp_account()
         if self.type == "Outgoing" and self.message_type != "Template":
             if self.attach and not self.attach.startswith("http"):
-                link = frappe.utils.get_url() + "/" + self.attach
+                link = get_url() + "/" + self.attach
             else:
                 link = self.attach
 
@@ -86,9 +166,22 @@ class WhatsAppMessage(Document):
             elif self.content_type == "interactive":
                 # Interactive message (buttons or list)
                 data["type"] = "interactive"
-                buttons_data = json.loads(self.buttons) if isinstance(self.buttons, str) else self.buttons
 
-                if isinstance(buttons_data, list) and len(buttons_data) > 3:
+                if isinstance(self.buttons, str):
+                    buttons_data = json.loads(
+                        self.buttons) if self.buttons else []
+                else:
+                    buttons_data = self.buttons or []
+
+                if not isinstance(buttons_data, list):
+                    frappe.throw(
+                        _("Buttons must be a list for interactive messages"))
+
+                if not buttons_data:
+                    frappe.throw(
+                        _("Buttons are required for interactive messages"))
+
+                if len(buttons_data) > 3:
                     # Use list message for more than 3 options (max 10)
                     data["interactive"] = {
                         "type": "list",
@@ -98,7 +191,11 @@ class WhatsAppMessage(Document):
                             "sections": [{
                                 "title": "Options",
                                 "rows": [
-                                    {"id": btn["id"], "title": btn["title"], "description": btn.get("description", "")}
+                                    {
+                                        "id": btn["id"],
+                                        "title": btn["title"],
+                                        "description": btn.get(
+                                            "description", "")}
                                     for btn in buttons_data[:10]
                                 ]
                             }]
@@ -113,7 +210,9 @@ class WhatsAppMessage(Document):
                             "buttons": [
                                 {
                                     "type": "reply",
-                                    "reply": {"id": btn["id"], "title": btn["title"]}
+                                    "reply": {
+                                        "id": btn["id"],
+                                        "title": btn["title"]}
                                 }
                                 for btn in buttons_data[:3]
                             ]
@@ -123,34 +222,55 @@ class WhatsAppMessage(Document):
             elif self.content_type == "flow":
                 # WhatsApp Flow message
                 if not self.flow:
-                    frappe.throw(_("WhatsApp Flow is required for flow content type"))
-
-                flow_doc = frappe.get_doc("WhatsApp Flow", self.flow)
+                    frappe.throw(
+                        _("WhatsApp Flow is required for flow content type"))
+                from whatsapp_flow.whatsapp_flow import WhatsAppFlow
+                flow_doc = cast(
+                    WhatsAppFlow,
+                    frappe.get_doc(
+                        "WhatsApp Flow",
+                        str(self.flow)))
 
                 if not flow_doc.flow_id:
-                    frappe.throw(_("Flow must be created on WhatsApp before sending"))
+                    frappe.throw(_(
+                        "Flow must be created on WhatsApp before sending"))
 
-                # Determine flow mode - draft flows can be tested with mode: "draft"
+                # Determine flow mode - draft flows can be tested with mode:
+                # "draft"
                 flow_mode = None
                 if flow_doc.status != "Published":
                     flow_mode = "draft"
-                    frappe.msgprint(_("Sending flow in draft mode (for testing only)"), indicator="orange")
+                    frappe.msgprint(
+                        _("Sending flow in draft mode (for testing only)"),
+                        indicator="orange")
 
                 # Get first screen if not specified
                 flow_screen = self.flow_screen
                 if not flow_screen and flow_doc.screens:
-                    flow_screen = flow_doc.screens[0].screen_id
+                    first_screen = flow_doc.screens[0]
+                    flow_screen = (
+                        getattr(first_screen, "screen_id", None)
+                        or getattr(first_screen, "screen", None)
+                        or getattr(first_screen, "screen_name", None)
+                        or getattr(first_screen, "name", None)
+                    )
+
+                if not flow_screen:
+                    frappe.throw(
+                        _("Flow screen is required to send flow message"))
 
                 data["type"] = "interactive"
                 data["interactive"] = {
                     "type": "flow",
-                    "body": {"text": self.message or "Please fill out the form"},
+                    "body": {
+                        "text": self.message or "Please fill out the form"},
                     "action": {
                         "name": "flow",
                         "parameters": {
                             "flow_message_version": "3",
                             "flow_id": flow_doc.flow_id,
-                            "flow_cta": self.flow_cta or flow_doc.flow_cta or "Open",
+                            "flow_cta": (
+                                self.flow_cta or flow_doc.flow_cta or "Open"),
                             "flow_action": "navigate",
                             "flow_action_payload": {
                                 "screen": flow_screen
@@ -161,11 +281,14 @@ class WhatsAppMessage(Document):
 
                 # Add draft mode for testing unpublished flows
                 if flow_mode:
-                    data["interactive"]["action"]["parameters"]["mode"] = flow_mode
+                    data["interactive"]["action"]["parameters"][
+                        "mode"] = flow_mode
 
-                # Add flow token - generate one if not provided (required by WhatsApp)
+                # Add flow token - generate one if not provided (required by
+                # WhatsApp)
                 flow_token = self.flow_token or frappe.generate_hash(length=16)
-                data["interactive"]["action"]["parameters"]["flow_token"] = flow_token
+                data["interactive"]["action"]["parameters"][
+                    "flow_token"] = flow_token
 
             try:
                 self.notify(data)
@@ -173,14 +296,22 @@ class WhatsAppMessage(Document):
             except Exception as e:
                 self.status = "Failed"
                 frappe.throw(f"Failed to send message {str(e)}")
-        elif self.type == "Outgoing" and self.message_type == "Template" and not self.message_id:
+        elif self.type == "Outgoing" and self.message_type == "Template" and \
+                not self.message_id:
             self.send_template()
 
         self.create_whatsapp_profile()
 
     def send_template(self):
         """Send template."""
-        template = frappe.get_doc("WhatsApp Templates", self.template)
+        from whatsapp_templates.whatsapp_templates import WhatsAppTemplates
+        if not self.template:
+            frappe.throw(_("Template is required to send template message"))
+            return
+        template = cast(
+            WhatsAppTemplates,
+            frappe.get_doc("WhatsApp Templates", self.template)
+        )
         data = {
             "messaging_product": "whatsapp",
             "to": format_number(self.to),
@@ -193,7 +324,9 @@ class WhatsAppMessage(Document):
         }
 
         if template.sample_values:
-            field_names = template.field_names.split(",") if template.field_names else template.sample_values.split(",")
+            field_names = (template.field_names.split(",")
+                           if template.field_names else
+                           template.sample_values.split(","))
             parameters = []
             template_parameters = []
 
@@ -207,10 +340,16 @@ class WhatsAppMessage(Document):
                 for field_name in field_names:
                     value = custom_values.get(field_name.strip())
                     parameters.append({"type": "text", "text": value})
-                    template_parameters.append(value)                    
+                    template_parameters.append(value)
 
             else:
-                ref_doc = frappe.get_doc(self.reference_doctype, self.reference_name)
+                if not (self.reference_doctype and self.reference_name):
+                    frappe.throw(
+                        _("Reference Doctype and Reference Name are required"
+                          " to fetch template parameters"))
+                    return
+                ref_doc = frappe.get_doc(
+                    self.reference_doctype, self.reference_name)
                 for field_name in field_names:
                     value = ref_doc.get_formatted(field_name.strip())
                     parameters.append({"type": "text", "text": value})
@@ -231,7 +370,7 @@ class WhatsAppMessage(Document):
                     if self.attach.startswith("http"):
                         url = f'{self.attach}'
                     else:
-                        url = f'{frappe.utils.get_url()}{self.attach}'
+                        url = f'{get_url()}{self.attach}'
                     data['template']['components'].append({
                         "type": "header",
                         "parameters": [{
@@ -247,7 +386,7 @@ class WhatsAppMessage(Document):
                     if template.sample.startswith("http"):
                         url = f'{template.sample}'
                     else:
-                        url = f'{frappe.utils.get_url()}{template.sample}'
+                        url = f'{get_url()}{template.sample}'
                     data['template']['components'].append({
                         "type": "header",
                         "parameters": [{
@@ -266,19 +405,29 @@ class WhatsAppMessage(Document):
                         "type": "button",
                         "sub_type": "quick_reply",
                         "index": str(idx),
-                        "parameters": [{"type": "payload", "payload": btn.button_label}]
+                        "parameters": [
+                            {"type": "payload",
+                             "payload": btn.button_label}]
                     })
                 elif btn.button_type == "Call Phone":
                     button_parameters.append({
                         "type": "button",
                         "sub_type": "phone_number",
                         "index": str(idx),
-                        "parameters": [{"type": "text", "text": btn.phone_number}]
+                        "parameters": [
+                            {"type": "text", "text": btn.phone_number}]
                     })
                 elif btn.button_type == "Visit Website":
                     url = btn.website_url
                     if btn.url_type == "Dynamic":
-                        ref_doc = frappe.get_doc(self.reference_doctype, self.reference_name)
+                        if not (self.reference_doctype and
+                                self.reference_name):
+                            frappe.throw(
+                                _("Reference Doctype and Reference Name are"
+                                  " required to fetch dynamic url"))
+                            return
+                        ref_doc = frappe.get_doc(
+                            self.reference_doctype, self.reference_name)
                         url = ref_doc.get_formatted(btn.website_url)
                     button_parameters.append({
                         "type": "button",
@@ -294,10 +443,19 @@ class WhatsAppMessage(Document):
 
     def notify(self, data):
         """Notify."""
-        whatsapp_account = frappe.get_doc(
-            "WhatsApp Account",
-            self.whatsapp_account,
+        if not self.whatsapp_account:
+            frappe.throw(_("WhatsApp Account is required to send message"))
+            return
+
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import WhatsAppAccount  # noqa: E501
+        whatsapp_account = cast(
+            WhatsAppAccount,
+            frappe.get_doc(
+                "WhatsApp Account",
+                self.whatsapp_account,
+            )
         )
+
         token = whatsapp_account.get_password("token")
 
         headers = {
@@ -306,29 +464,55 @@ class WhatsAppMessage(Document):
         }
         try:
             response = make_post_request(
-                f"{whatsapp_account.url}/{whatsapp_account.version}/{whatsapp_account.phone_id}/messages",
+                (f"{whatsapp_account.url}/{whatsapp_account.version}"
+                 f"/{whatsapp_account.phone_id}/messages"),
                 headers=headers,
                 data=json.dumps(data),
             )
-            self.message_id = response["messages"][0]["id"]
 
-        except Exception as e:
-            res = frappe.flags.integration_request.json().get("error", {})
+            response_dict: dict[str, Any] = {}
+            if response is None:
+                response_dict = {}
+            elif isinstance(response, str):
+                try:
+                    parsed = json.loads(response)
+                    response_dict = parsed if isinstance(parsed, dict) else {}
+                except Exception:
+                    response_dict = {}
+            elif isinstance(response, dict):
+                response_dict = response
+            else:
+                response_dict = {}
+
+            messages = response_dict.get("messages")
+            if isinstance(messages, list) and messages:
+                first = messages[0]
+                if isinstance(first, dict):
+                    message_id = first.get("id")
+                    if isinstance(message_id, str) and message_id:
+                        self.message_id = message_id
+
+        except Exception:
+            integration_json = _get_integration_request_json()
+            res = integration_json.get("error", {}) if isinstance(
+                integration_json, dict) else {}
             error_message = res.get("Error", res.get("message"))
             frappe.get_doc(
                 {
                     "doctype": "WhatsApp Notification Log",
                     "template": "Text Message",
-                    "meta_data": frappe.flags.integration_request.json(),
+                    "meta_data": integration_json,
                 }
             ).insert(ignore_permissions=True)
 
-            frappe.throw(msg=error_message, title=res.get("error_user_title", "Error"))
+            frappe.throw(
+                msg=error_message or _("Failed to send WhatsApp message"),
+                title=res.get("error_user_title", "Error"))
 
     def format_number(self, number):
         """Format number."""
         if number.startswith("+"):
-            number = number[1 : len(number)]
+            number = number[1: len(number)]
 
         return number
 
@@ -339,10 +523,17 @@ class WhatsAppMessage(Document):
             "status": "read",
             "message_id": self.message_id
         }
+        if not self.whatsapp_account:
+            frappe.throw(_("WhatsApp Account is required to send message"))
+            return
 
-        settings = frappe.get_doc(
-            "WhatsApp Account",
-            self.whatsapp_account,
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import WhatsAppAccount  # noqa: E501
+        settings = cast(
+            WhatsAppAccount,
+            frappe.get_doc(
+                "WhatsApp Account",
+                self.whatsapp_account
+                )
         )
 
         token = settings.get_password("token")
@@ -353,24 +544,43 @@ class WhatsAppMessage(Document):
         }
         try:
             response = make_post_request(
-                f"{settings.url}/{settings.version}/{settings.phone_id}/messages",
+                f"{settings.url}/{settings.version}/" +
+                f"{settings.phone_id}/messages",
                 headers=headers,
                 data=json.dumps(data),
             )
 
-            if response.get("success"):
+            if response is None:
+                return None
+
+            response_dict = response
+            if isinstance(response_dict, str):
+                try:
+                    response_dict = json.loads(response_dict)
+                except Exception:
+                    response_dict = {}
+
+            if not isinstance(response_dict, dict):
+                response_dict = {}
+
+            success = response_dict.get("success")
+
+            if success:
                 self.status = "marked as read"
                 self.save()
-                return response.get("success")
+                return response_dict.get("success")
 
-        except Exception as e:
-            res = frappe.flags.integration_request.json().get("error", {})
+        except Exception:
+            integration_json = _get_integration_request_json()
+            res = integration_json.get("error", {}) if isinstance(
+                integration_json, dict) else {}
             error_message = res.get("Error", res.get("message"))
             frappe.log_error("WhatsApp API Error", f"{error_message}\n{res}")
 
 
 def on_doctype_update():
-    frappe.db.add_index("WhatsApp Message", ["reference_doctype", "reference_name"])
+    frappe.db.add_index(
+        "WhatsApp Message", ["reference_doctype", "reference_name"])
 
 
 @frappe.whitelist()

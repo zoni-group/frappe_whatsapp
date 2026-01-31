@@ -37,14 +37,14 @@ $(document).on('app_ready', function () {
 					                        }
 					                    });
 					                } else {
-					                    d.set_value('mobile_no', '');
+					                    dialog.set_value('mobile_no', '');
 					                }
 					            }},
 								{ 'label': 'Mobile no', 'fieldname': 'mobile_no', 'fieldtype': 'Data' },
 
 							],
 							'primary_action_label': 'Send',
-							'title': 'Send a Telegram Message',
+							'title': 'Send a WhatsApp Message',
 							primary_action: function () {
 								var values = dialog.get_values();
 								if (values) {

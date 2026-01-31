@@ -1,7 +1,8 @@
 """Run on each event."""
 import frappe
-
+from typing import cast
 from frappe.core.doctype.server_script.server_script_utils import EVENT_MAP
+from frappe.model.document import Document
 
 
 def run_server_script_for_doc_event(doc, event):
@@ -14,7 +15,7 @@ def run_server_script_for_doc_event(doc, event):
 
     if frappe.flags.in_migrate:
         return
-    
+
     if frappe.flags.in_uninstall:
         return
 
@@ -25,21 +26,27 @@ def run_server_script_for_doc_event(doc, event):
     if notification:
         # run all scripts for this doctype + event
         for notification_name in notification:
-            frappe.get_doc(
+            from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_notification.whatsapp_notification import WhatsAppNotification  # noqa
+            cast(WhatsAppNotification, frappe.get_doc(
                 "WhatsApp Notification",
                 notification_name
-            ).send_template_message(doc)
+            )).send_template_message(doc)
 
 
 def get_notifications_map():
     """Get mapping."""
-    if frappe.flags.in_patch and not frappe.db.table_exists("WhatsApp Notification"):
+    if frappe.flags.in_patch and not frappe.db.table_exists(
+            "WhatsApp Notification"):
         return {}
 
     notification_map = {}
     enabled_whatsapp_notifications = frappe.get_all(
         "WhatsApp Notification",
-        fields=("name", "reference_doctype", "doctype_event", "notification_type"),
+        fields=(
+            "name",
+            "reference_doctype",
+            "doctype_event",
+            "notification_type"),
         filters={"disabled": 0},
     )
     for notification in enabled_whatsapp_notifications:
@@ -114,30 +121,40 @@ def trigger_whatsapp_notifications(event):
             "disabled": 0,
         }
     )
-
+    from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_notification.whatsapp_notification import WhatsAppNotification  # noqa
     for wa in wa_notify_list:
-        frappe.get_doc(
-            "WhatsApp Notification",
-            wa.name,
-        ).send_scheduled_message()
+        cast(WhatsAppNotification,
+             frappe.get_doc(
+                "WhatsApp Notification",
+                wa.name,
+                )).send_scheduled_message()
 
-def get_whatsapp_account(phone_id=None, account_type='incoming'):
+
+def get_whatsapp_account(
+        phone_id=None, account_type='incoming') -> Document | None:
     """map whatsapp account with message"""
     if phone_id:
-        account_name = frappe.db.get_value('WhatsApp Account', {'phone_id': phone_id}, 'name')
+        account_name = frappe.db.get_value(
+            'WhatsApp Account', {'phone_id': phone_id}, 'name')
         if account_name:
-            return frappe.get_doc("WhatsApp Account", account_name)
+            return frappe.get_doc(
+                "WhatsApp Account", str(account_name))
 
-    account_field_type = 'is_default_incoming' if account_type =='incoming' else 'is_default_outgoing' 
-    default_account_name = frappe.db.get_value('WhatsApp Account', {account_field_type: 1}, 'name')
+    account_field_type = ('is_default_incoming'
+                          if account_type == 'incoming' else
+                          'is_default_outgoing')
+    default_account_name = frappe.db.get_value(
+        'WhatsApp Account', {account_field_type: 1}, 'name')
     if default_account_name:
-        return frappe.get_doc("WhatsApp Account", default_account_name)
+        return frappe.get_doc(
+            "WhatsApp Account", str(default_account_name))
 
     return None
+
 
 def format_number(number):
     """Format number."""
     if number.startswith("+"):
-        number = number[1 : len(number)]
+        number = number[1: len(number)]
 
     return number
