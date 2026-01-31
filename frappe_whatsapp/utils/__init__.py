@@ -2,6 +2,7 @@
 import frappe
 from typing import cast
 from frappe.core.doctype.server_script.server_script_utils import EVENT_MAP
+from frappe.model.document import Document
 
 
 def run_server_script_for_doc_event(doc, event):
@@ -130,7 +131,7 @@ def trigger_whatsapp_notifications(event):
 
 
 def get_whatsapp_account(
-        phone_id=None, account_type='incoming') -> frappe.Document | None:
+        phone_id=None, account_type='incoming') -> Document | None:
     """map whatsapp account with message"""
     if phone_id:
         account_name = frappe.db.get_value(
