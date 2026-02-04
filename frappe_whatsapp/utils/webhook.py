@@ -397,3 +397,23 @@ def download_and_attach_media(
         message_docname,
         "attach",
         file_doc.file_url)
+
+
+def publish_flow_realtime(
+        phone: str, message_id: str, flow_response: dict,
+        whatsapp_account: str):
+    """Publish a realtime event when a WhatsApp Flow response is received.
+
+    This allows the frontend to react to incoming flow responses.
+    """
+    frappe.publish_realtime(
+        event="whatsapp_flow_response",
+        message={
+            "phone": phone,
+            "message_id": message_id,
+            "flow_response": flow_response,
+            "whatsapp_account": whatsapp_account,
+        },
+        doctype="WhatsApp Message",
+        after_commit=True
+    )
