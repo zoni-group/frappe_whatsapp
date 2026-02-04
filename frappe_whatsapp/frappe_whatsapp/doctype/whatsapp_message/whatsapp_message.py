@@ -224,7 +224,7 @@ class WhatsAppMessage(Document):
                 if not self.flow:
                     frappe.throw(
                         _("WhatsApp Flow is required for flow content type"))
-                from whatsapp_flow.whatsapp_flow import WhatsAppFlow
+                from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_flow.whatsapp_flow import WhatsAppFlow  # noqa: E501
                 flow_doc = cast(
                     WhatsAppFlow,
                     frappe.get_doc(
@@ -304,7 +304,7 @@ class WhatsAppMessage(Document):
 
     def send_template(self):
         """Send template."""
-        from whatsapp_templates.whatsapp_templates import WhatsAppTemplates
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_templates.whatsapp_templates import WhatsAppTemplates  # noqa: E501
         if not self.template:
             frappe.throw(_("Template is required to send template message"))
             return
