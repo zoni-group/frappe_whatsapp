@@ -429,6 +429,7 @@ class WhatsAppNotification(Document):
                         }
                     }]
                 })
+                self.content_type = "document"
             elif template.header_type == 'IMAGE':
                 data['template']['components'].append({
                     "type": "header",
@@ -439,7 +440,10 @@ class WhatsAppNotification(Document):
                         }
                     }]
                 })
-            self.content_type = template.header_type.lower()
+                self.content_type = "image"
+            else:
+                # Default to text for empty or TEXT header types
+                self.content_type = "text"
 
             if template.buttons:
                 button_fields = self.button_fields.split(
