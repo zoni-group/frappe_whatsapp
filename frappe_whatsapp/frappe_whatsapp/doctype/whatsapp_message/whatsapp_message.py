@@ -81,7 +81,7 @@ class WhatsAppMessage(Document):
         number = self.get("from")
         if not number:
             return
-        from_number = format_number(number)
+        from_number = format_number(str(number))
 
         if (
             self.has_value_changed("profile_name")
@@ -96,7 +96,7 @@ class WhatsAppMessage(Document):
                 profile_id, "profile_name", self.profile_name)
 
     def create_whatsapp_profile(self):
-        number = format_number(self.get("from") or self.to)
+        number = format_number(str(self.get("from") or self.to))
         if not frappe.db.exists("WhatsApp Profiles", {"number": number}):
             frappe.get_doc({
                 "doctype": "WhatsApp Profiles",
@@ -140,7 +140,7 @@ class WhatsAppMessage(Document):
             else:
                 link = self.attach
 
-            data = {
+            data: dict[str, Any] = {
                 "messaging_product": "whatsapp",
                 "to": format_number(self.to),
                 "type": self.content_type,
@@ -312,7 +312,7 @@ class WhatsAppMessage(Document):
             WhatsAppTemplates,
             frappe.get_doc("WhatsApp Templates", self.template)
         )
-        data = {
+        data: dict[str, Any] = {
             "messaging_product": "whatsapp",
             "to": format_number(self.to),
             "type": "template",
@@ -518,7 +518,7 @@ class WhatsAppMessage(Document):
 
     @frappe.whitelist()
     def send_read_receipt(self):
-        data = {
+        data: dict[str, Any] = {
             "messaging_product": "whatsapp",
             "status": "read",
             "message_id": self.message_id
