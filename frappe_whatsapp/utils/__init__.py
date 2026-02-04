@@ -152,9 +152,17 @@ def get_whatsapp_account(
     return None
 
 
-def format_number(number):
-    """Format number."""
-    if number.startswith("+"):
-        number = number[1: len(number)]
+def format_number(number: str | None) -> str:
+    """Format number by removing leading '+' if present.
 
+    Args:
+        number: Phone number string, may be None.
+
+    Returns:
+        Formatted number without leading '+', or empty string if None.
+    """
+    if not number:
+        return ""
+    if number.startswith("+"):
+        number = number[1:]
     return number
