@@ -90,7 +90,8 @@ class BulkWhatsAppMessage(Document):
                 frappe.enqueue_doc(
                     self.doctype, self.name,
                     "create_single_message",
-                    "long", 4000,
+                    queue="long",
+                    timeout=4000,
                     recipient=recipient
                 )
         else:
@@ -99,7 +100,8 @@ class BulkWhatsAppMessage(Document):
                 frappe.enqueue_doc(
                     self.doctype, self.name,
                     "create_single_message",
-                    "long", 4000,
+                    queue="long",
+                    timeout=4000,
                     recipient=recipient
                 )
 
