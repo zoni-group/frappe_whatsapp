@@ -10,7 +10,10 @@ from typing import cast, Any
 from frappe_whatsapp.utils.routing import set_last_sender_app
 
 from frappe_whatsapp.utils import get_whatsapp_account, format_number
-from frappe_whatsapp.utils.consent import verify_consent_for_send
+from frappe_whatsapp.utils.consent import (
+    verify_consent_for_send,
+    is_within_conversation_window,
+)
 
 
 def _get_integration_request_json() -> dict:
@@ -156,6 +159,29 @@ class WhatsAppMessage(Document):
                 _("Cannot send message: {0}").format(result.reason),
                 title=_("Consent Required"))
 
+    def _check_conversation_window(self):
+        """Enforce 24-hour window for non-template messages."""
+        from frappe_whatsapp.utils.consent import get_compliance_settings
+
+        within, reason = is_within_conversation_window(
+            str(self.to or ""),
+            whatsapp_account=self.whatsapp_account,
+        )
+
+        self.within_conversation_window = 1 if within else 0
+
+        if not within:
+            settings = get_compliance_settings()
+            if not settings.allow_reply_outside_window:
+                frappe.throw(
+                    _(
+                        "Cannot send free-form message outside"
+                        " the conversation window. Use an approved"
+                        " template instead. {0}"
+                    ).format(reason),
+                    title=_("Outside Conversation Window"),
+                )
+
     """Record last sender app"""
     def after_insert(self):
         if (self.type == "Outgoing" and self.source_app and
@@ -172,9 +198,15 @@ class WhatsAppMessage(Document):
         """Send message."""
         self.set_whatsapp_account()
 
-        # Consent check for all outgoing messages
-        if self.type == "Outgoing" and self.to:
+        # Consent + window checks only for messages not yet sent.
+        # Docs created with message_id already set (e.g. from
+        # notification.notify()) are log records of already-sent messages.
+        if self.type == "Outgoing" and self.to and not self.message_id:
             self._check_consent()
+
+            # 24-hour window: non-template messages need recent incoming
+            if self.message_type != "Template":
+                self._check_conversation_window()
 
         if self.type == "Outgoing" and self.message_type != "Template":
             if self.attach and not self.attach.startswith("http"):

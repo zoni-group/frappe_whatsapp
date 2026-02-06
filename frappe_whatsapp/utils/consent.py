@@ -5,7 +5,7 @@ audit logging, and confirmation message sending.
 """
 import frappe
 from frappe import _
-from frappe.utils import now_datetime
+from frappe.utils import now_datetime, time_diff_in_hours
 from typing import Any, cast
 
 from frappe_whatsapp.utils import format_number
@@ -195,6 +195,62 @@ def verify_consent_for_send(
     # Strict mode: no explicit opt-in → block
     return ConsentResult(
         False, "Unknown", "Contact has not opted in")
+
+
+# ── 24-hour conversation window ──────────────────────────────────────
+
+def is_within_conversation_window(
+        phone_number: str,
+        whatsapp_account: str | None = None,
+) -> tuple[bool, str]:
+    """Check if there's an active conversation window with the contact.
+
+    WhatsApp requires that free-form (non-template) messages can only be
+    sent within 24 hours of the last incoming message from the contact.
+
+    Returns (is_within_window, reason).
+    """
+    settings = get_compliance_settings()
+
+    if not settings.enforce_24_hour_window:
+        return True, "24-hour window enforcement disabled"
+
+    number = format_number(phone_number)
+    if not number:
+        return False, "No phone number"
+
+    window_hours = int(settings.window_hours or 24)
+
+    # Find the most recent incoming message from this contact
+    filters: dict[str, Any] = {
+        "type": "Incoming",
+        "from": number,
+    }
+    if whatsapp_account:
+        filters["whatsapp_account"] = whatsapp_account
+
+    last_incoming = frappe.get_all(
+        "WhatsApp Message",
+        filters=filters,
+        fields=["creation"],
+        order_by="creation desc",
+        limit=1,
+    )
+
+    if not last_incoming:
+        return False, "No incoming message found from this contact"
+
+    last_msg_time = last_incoming[0].creation
+    hours_since = time_diff_in_hours(now_datetime(), last_msg_time)
+
+    if hours_since <= window_hours:
+        return True, ""
+
+    return (
+        False,
+        f"Last incoming message was {hours_since:.1f}h ago"
+        f" (window: {window_hours}h)",
+    )
 
 
 # ── Profile updates ──────────────────────────────────────────────────
