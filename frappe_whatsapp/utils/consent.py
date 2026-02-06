@@ -514,3 +514,30 @@ def _log_consent(
         "user": frappe.session.user,
         "timestamp": now_datetime(),
     }).insert(ignore_permissions=True)
+
+
+def enforce_marketing_template_compliance(template) -> None:
+    """Block sending marketing templates without unsubscribe instructions."""
+    if not template or getattr(template, "category", "") != "MARKETING":
+        return
+
+    settings = get_compliance_settings()
+    if not settings.include_unsubscribe_in_marketing:
+        return
+
+    unsubscribe_text = (
+        (getattr(template, "unsubscribe_text", "") or "").strip()
+        or (settings.default_unsubscribe_text or "").strip()
+    )
+    if not unsubscribe_text:
+        frappe.throw(
+            _("Unsubscribe text is required for marketing templates. "
+              "Set it on the template or in Compliance Settings.")
+        )
+
+    footer = (getattr(template, "footer", "") or "").strip()
+    if unsubscribe_text not in footer:
+        frappe.throw(
+            _("Marketing templates must include unsubscribe text in the "
+              "footer. Please update the template.")
+        )

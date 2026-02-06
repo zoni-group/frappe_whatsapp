@@ -9,6 +9,7 @@ from frappe.model.document import Document
 from frappe.integrations.utils import make_post_request, make_request
 from frappe import _
 from frappe_whatsapp.utils import get_whatsapp_account
+from frappe_whatsapp.utils.consent import get_compliance_settings
 from frappe.utils import get_bench_path, get_site_base_path
 from typing import Any, Mapping, cast
 
@@ -55,6 +56,7 @@ class WhatsAppTemplates(Document):
 
     def validate(self):
         self.set_whatsapp_account()
+        self._apply_marketing_unsubscribe_rules()
 
         before = cast(
             WhatsAppTemplates,
@@ -75,6 +77,38 @@ class WhatsAppTemplates(Document):
 
         if not self.is_new():
             self.update_template()
+
+    def _apply_marketing_unsubscribe_rules(self) -> None:
+        """Auto-inject unsubscribe text for marketing templates when enabled."""
+        if self.category != "MARKETING":
+            return
+
+        settings = get_compliance_settings()
+        if not settings.include_unsubscribe_in_marketing:
+            return
+
+        unsubscribe_text = (
+            (self.unsubscribe_text or "").strip()
+            or (settings.default_unsubscribe_text or "").strip()
+        )
+        if not unsubscribe_text:
+            frappe.throw(
+                _("Unsubscribe text is required for marketing templates. "
+                  "Set Unsubscribe Text on the template or Default "
+                  "Unsubscribe Text in Compliance Settings.")
+            )
+
+        footer = (self.footer or "").strip()
+        if not footer:
+            self.footer = unsubscribe_text
+            self.include_unsubscribe_instructions = 1
+            return
+
+        if unsubscribe_text not in footer:
+            # Keep content readable; avoid double separators.
+            separator = "\n" if "\n" in footer else " "
+            self.footer = f"{footer}{separator}{unsubscribe_text}"
+            self.include_unsubscribe_instructions = 1
 
     def set_whatsapp_account(self):
         """Set whatsapp account to default if missing"""

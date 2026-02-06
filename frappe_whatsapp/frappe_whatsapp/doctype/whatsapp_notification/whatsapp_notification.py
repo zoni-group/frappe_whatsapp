@@ -14,7 +14,10 @@ from frappe.model import numeric_fieldtypes
 from datetime import datetime as py_datetime, time as py_time
 
 from frappe_whatsapp.utils import get_whatsapp_account
-from frappe_whatsapp.utils.consent import verify_consent_for_send
+from frappe_whatsapp.utils.consent import (
+    verify_consent_for_send,
+    enforce_marketing_template_compliance,
+)
 from typing import Any, cast, TypedDict, Optional
 
 
@@ -219,6 +222,7 @@ class WhatsAppNotification(Document):
         template = cast(
             WhatsAppTemplates,
             frappe.get_doc("WhatsApp Templates", self.template))
+        enforce_marketing_template_compliance(template)
 
         if not getattr(template, "language_code", None):
             return {
@@ -326,6 +330,7 @@ class WhatsAppNotification(Document):
             "WhatsApp Templates", self.template)
         from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_templates.whatsapp_templates import WhatsAppTemplates  # noqa
         template = cast(WhatsAppTemplates, template)
+        enforce_marketing_template_compliance(template)
 
         if template:
             if self.field_name:
