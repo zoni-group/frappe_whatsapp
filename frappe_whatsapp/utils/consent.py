@@ -513,6 +513,15 @@ def _send_template_confirmation(
         WhatsAppTemplates,
         frappe.get_doc("WhatsApp Templates", template_name))
 
+    status = (getattr(template, "status", "") or "").strip().upper()
+    if status != "APPROVED":
+        frappe.throw(
+            _("Opt-out confirmation template is not approved "
+              "(status: {0}).").format(
+                getattr(template, "status", "") or "Unknown"
+            )
+        )
+
     if template.sample_values or template.field_names:
         frappe.throw(
             _("Opt-out confirmation template must not require parameters."))
