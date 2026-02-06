@@ -91,6 +91,112 @@ def check_opt_in_keyword(message_text: str) -> bool:
     return message_text.strip().lower() in opt_in_words
 
 
+# ── Consent verification before sending ──────────────────────────────
+
+class ConsentResult:
+    """Result of a consent check before sending."""
+    __slots__ = ("allowed", "status", "reason")
+
+    def __init__(
+            self, allowed: bool, status: str, reason: str = "") -> None:
+        self.allowed = allowed
+        self.status = status    # "Opted In" | "Opted Out" | "Unknown"
+        # | "Bypassed"
+        self.reason = reason
+
+
+def verify_consent_for_send(
+        phone_number: str,
+        *,
+        consent_category: str | None = None,
+        is_transactional: bool = False,
+) -> ConsentResult:
+    """Check whether we are allowed to send a message to *phone_number*.
+
+    Checks (in order):
+    1. Whether enforcement is enabled at all.
+    2. Whether the profile has do_not_contact set (always blocks).
+    3. Whether the profile is opted out.
+    4. Optionally, whether category-level consent exists.
+    5. Whether transactional messages bypass consent.
+
+    Returns a ConsentResult with allowed=True/False and a status string
+    suitable for storing in WhatsApp Message.consent_status_at_send.
+    """
+    settings = get_compliance_settings()
+
+    # Enforcement disabled → always allow
+    if settings.consent_check_mode == "Disabled":
+        return ConsentResult(True, "Bypassed", "Consent check disabled")
+
+    if not settings.enforce_consent_check:
+        return ConsentResult(True, "Bypassed", "Consent enforcement off")
+
+    number = format_number(phone_number)
+    if not number:
+        return ConsentResult(True, "Unknown", "No phone number")
+
+    profile = frappe.db.get_all(
+        "WhatsApp Profiles",
+        filters={"number": number},
+        fields=["name", "do_not_contact", "is_opted_out", "is_opted_in"],
+        limit=1,
+    )
+
+    # No profile exists → treat as Unknown
+    if not profile:
+        # Transactional bypass
+        if is_transactional and settings.allow_transactional_without_consent:
+            return ConsentResult(True, "Bypassed", "Transactional bypass")
+        if settings.consent_check_mode == "Warning Only":
+            return ConsentResult(True, "Unknown", "No profile found")
+        return ConsentResult(
+            False, "Unknown", "No consent profile found for this number")
+
+    from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_profiles.whatsapp_profiles import WhatsAppProfiles  # noqa: E501
+    profile = cast(
+        WhatsAppProfiles,
+        frappe.get_doc("WhatsApp Profiles", profile[0].name))
+
+    # Hard block: do_not_contact always prevents sending
+    if profile.do_not_contact:
+        return ConsentResult(
+            False, "Opted Out", "Contact is marked Do Not Contact")
+
+    # Opted out at profile level
+    if profile.is_opted_out:
+        return ConsentResult(
+            False, "Opted Out", "Contact has opted out")
+
+    # Category-level check (if a category is specified)
+    if consent_category and profile.name:
+        cat_consent = frappe.db.get_value(
+            "WhatsApp Profile Consent",
+            {"parent": profile.name, "consent_category": consent_category},
+            ["consented"],
+            as_dict=True,
+        )
+        if cat_consent and not cat_consent.consented:
+            return ConsentResult(
+                False, "Opted Out",
+                f"Contact opted out of category: {consent_category}")
+
+    # Explicitly opted in
+    if profile.is_opted_in:
+        return ConsentResult(True, "Opted In", "")
+
+    # Profile exists but consent status is Unknown/Partial
+    if is_transactional and settings.allow_transactional_without_consent:
+        return ConsentResult(True, "Bypassed", "Transactional bypass")
+
+    if settings.consent_check_mode == "Warning Only":
+        return ConsentResult(True, "Unknown", "Consent not confirmed")
+
+    # Strict mode: no explicit opt-in → block
+    return ConsentResult(
+        False, "Unknown", "Contact has not opted in")
+
+
 # ── Profile updates ──────────────────────────────────────────────────
 
 def _get_or_create_profile(

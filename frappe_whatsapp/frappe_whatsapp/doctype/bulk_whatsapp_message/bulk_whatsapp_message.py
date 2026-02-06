@@ -9,6 +9,8 @@ from frappe.model.document import Document
 from frappe.model.naming import make_autoname
 from typing import cast
 
+from frappe_whatsapp.utils.consent import verify_consent_for_send
+
 # Add these files to your frappe_whatsapp app
 
 # 1. First, create a new DocType for Bulk WhatsApp Messaging
@@ -111,7 +113,23 @@ class BulkWhatsAppMessage(Document):
 
     def create_single_message(self, recipient):
         """Create a single message in the queue"""
-        # message_content = self.message_content
+        mobile = recipient.get("mobile_number")
+
+        # Consent check: skip recipients who haven't consented
+        if self.skip_opted_out and mobile:
+            result = verify_consent_for_send(
+                str(mobile),
+                consent_category=self.required_consent_category,
+                is_transactional=False,
+            )
+            if not result.allowed:
+                self.db_set(
+                    "skipped_count",
+                    cint(self.skipped_count) + 1)
+                frappe.logger().info(
+                    f"Bulk {self.name}: skipping"
+                    f" {mobile}: {result.reason}")
+                return
 
         # Replace variables in the message if any
         self.status = "In Progress"

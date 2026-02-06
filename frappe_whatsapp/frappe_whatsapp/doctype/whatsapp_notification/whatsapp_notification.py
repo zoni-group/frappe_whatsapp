@@ -14,6 +14,7 @@ from frappe.model import numeric_fieldtypes
 from datetime import datetime as py_datetime, time as py_time
 
 from frappe_whatsapp.utils import get_whatsapp_account
+from frappe_whatsapp.utils.consent import verify_consent_for_send
 from typing import Any, cast, TypedDict, Optional
 
 
@@ -278,6 +279,18 @@ class WhatsAppNotification(Document):
     def send_simple_template(self, template):
         """ send simple template without a doc to get field data """
         for contact in self._contact_list:
+            # Consent check: skip recipients who haven't consented
+            if self.check_consent_before_send:
+                result = verify_consent_for_send(
+                    str(contact),
+                    consent_category=self.required_consent_category,
+                    is_transactional=bool(self.is_transactional),
+                )
+                if not result.allowed:
+                    frappe.logger().info(
+                        f"Skipping {contact}: {result.reason}")
+                    continue
+
             data = {
                 "messaging_product": "whatsapp",
                 "to": self.format_number(contact),
@@ -319,6 +332,19 @@ class WhatsAppNotification(Document):
                 phone_number = phone_no or doc_data[self.field_name]
             else:
                 phone_number = phone_no
+
+            # Consent check: skip if recipient hasn't consented
+            if self.check_consent_before_send and phone_number:
+                result = verify_consent_for_send(
+                    str(phone_number),
+                    consent_category=self.required_consent_category,
+                    is_transactional=bool(self.is_transactional),
+                )
+                if not result.allowed:
+                    frappe.logger().info(
+                        f"Skipping notification to"
+                        f" {phone_number}: {result.reason}")
+                    return
 
             data = {
                 "messaging_product": "whatsapp",

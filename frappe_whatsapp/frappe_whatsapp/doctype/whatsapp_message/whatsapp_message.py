@@ -10,6 +10,7 @@ from typing import cast, Any
 from frappe_whatsapp.utils.routing import set_last_sender_app
 
 from frappe_whatsapp.utils import get_whatsapp_account, format_number
+from frappe_whatsapp.utils.consent import verify_consent_for_send
 
 
 def _get_integration_request_json() -> dict:
@@ -125,6 +126,36 @@ class WhatsAppMessage(Document):
             else:
                 self.whatsapp_account = default_whatsapp_account.name
 
+    def _check_consent(self):
+        """Verify consent before sending an outgoing message."""
+        # Determine if this template is transactional
+        is_transactional = False
+        consent_category: str | None = None
+        if self.template:
+            tmpl_data: dict[str, Any] | None = frappe.db.get_value(
+                "WhatsApp Templates", self.template,
+                fieldname={"is_transactional", "required_consent_category"},
+                as_dict=True,
+            )
+            if isinstance(tmpl_data, dict):
+                is_transactional = bool(tmpl_data.get("is_transactional"))
+                consent_category = tmpl_data.get("required_consent_category")
+
+        result = verify_consent_for_send(
+            str(self.to or ""),
+            consent_category=consent_category,
+            is_transactional=is_transactional,
+        )
+
+        # Record consent status on the message
+        self.consent_checked = 1
+        self.consent_status_at_send = cast(Any, result.status)
+        if not result.allowed:
+            self.consent_bypass_reason = result.reason
+            frappe.throw(
+                _("Cannot send message: {0}").format(result.reason),
+                title=_("Consent Required"))
+
     """Record last sender app"""
     def after_insert(self):
         if (self.type == "Outgoing" and self.source_app and
@@ -140,6 +171,11 @@ class WhatsAppMessage(Document):
     def before_insert(self):
         """Send message."""
         self.set_whatsapp_account()
+
+        # Consent check for all outgoing messages
+        if self.type == "Outgoing" and self.to:
+            self._check_consent()
+
         if self.type == "Outgoing" and self.message_type != "Template":
             if self.attach and not self.attach.startswith("http"):
                 link = get_url() + "/" + self.attach
