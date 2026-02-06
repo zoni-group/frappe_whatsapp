@@ -418,6 +418,14 @@ def send_opt_out_confirmation(
     if not settings.send_opt_out_confirmation:
         return
 
+    if settings.opt_out_confirmation_template:
+        _send_template_confirmation(
+            to=contact_number,
+            template_name=str(settings.opt_out_confirmation_template),
+            whatsapp_account_name=whatsapp_account_name,
+        )
+        return
+
     message_text = settings.opt_out_confirmation_message
     if not message_text:
         return
@@ -485,6 +493,62 @@ def _send_plain_text(
         frappe.log_error(
             frappe.get_traceback(),
             _("Failed to send opt-out/opt-in confirmation to {0}").format(to))
+
+
+def _send_template_confirmation(
+        *, to: str, template_name: str,
+        whatsapp_account_name: str) -> None:
+    """Send a template confirmation message without consent checks."""
+    import json
+    from frappe.integrations.utils import make_post_request
+    from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import WhatsAppAccount  # noqa: E501
+    from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_templates.whatsapp_templates import WhatsAppTemplates  # noqa: E501
+    from typing import cast
+
+    wa = cast(
+        WhatsAppAccount,
+        frappe.get_doc("WhatsApp Account", whatsapp_account_name))
+
+    template = cast(
+        WhatsAppTemplates,
+        frappe.get_doc("WhatsApp Templates", template_name))
+
+    if template.sample_values or template.field_names:
+        frappe.throw(
+            _("Opt-out confirmation template must not require parameters."))
+
+    if template.header_type in ("IMAGE", "DOCUMENT"):
+        frappe.throw(
+            _("Opt-out confirmation template must not require media headers.")
+        )
+
+    token = wa.get_password("token")
+    data = {
+        "messaging_product": "whatsapp",
+        "to": format_number(to),
+        "type": "template",
+        "template": {
+            "name": template.actual_name or template.template_name,
+            "language": {"code": template.language_code},
+            "components": [],
+        },
+    }
+
+    headers = {
+        "authorization": f"Bearer {token}",
+        "content-type": "application/json",
+    }
+
+    try:
+        make_post_request(
+            f"{wa.url}/{wa.version}/{wa.phone_id}/messages",
+            headers=headers,
+            data=json.dumps(data),
+        )
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            _("Failed to send opt-out confirmation template to {0}").format(to))
 
 
 # ── Audit log ────────────────────────────────────────────────────────
