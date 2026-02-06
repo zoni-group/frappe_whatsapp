@@ -14,6 +14,7 @@ from frappe_whatsapp.utils.consent import (
     verify_consent_for_send,
     is_within_conversation_window,
     enforce_marketing_template_compliance,
+    enforce_template_send_rules,
 )
 
 
@@ -388,6 +389,7 @@ class WhatsAppMessage(Document):
             frappe.get_doc("WhatsApp Templates", self.template)
         )
         enforce_marketing_template_compliance(template)
+        enforce_template_send_rules(template, to_number=str(self.to or ""))
         data: dict[str, Any] = {
             "messaging_product": "whatsapp",
             "to": format_number(self.to),

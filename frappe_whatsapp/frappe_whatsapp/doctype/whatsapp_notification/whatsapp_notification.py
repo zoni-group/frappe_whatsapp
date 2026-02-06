@@ -17,6 +17,7 @@ from frappe_whatsapp.utils import get_whatsapp_account
 from frappe_whatsapp.utils.consent import (
     verify_consent_for_send,
     enforce_marketing_template_compliance,
+    enforce_template_send_rules,
 )
 from typing import Any, cast, TypedDict, Optional
 
@@ -283,6 +284,7 @@ class WhatsAppNotification(Document):
     def send_simple_template(self, template):
         """ send simple template without a doc to get field data """
         for contact in self._contact_list:
+            enforce_template_send_rules(template, to_number=contact)
             # Consent check: skip recipients who haven't consented
             if self.check_consent_before_send:
                 result = verify_consent_for_send(
@@ -337,6 +339,9 @@ class WhatsAppNotification(Document):
                 phone_number = phone_no or doc_data[self.field_name]
             else:
                 phone_number = phone_no
+
+            enforce_template_send_rules(
+                template, to_number=str(phone_number or ""))
 
             # Consent check: skip if recipient hasn't consented
             if self.check_consent_before_send and phone_number:

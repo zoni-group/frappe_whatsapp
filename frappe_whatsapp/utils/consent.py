@@ -541,3 +541,51 @@ def enforce_marketing_template_compliance(template) -> None:
             _("Marketing templates must include unsubscribe text in the "
               "footer. Please update the template.")
         )
+
+
+def enforce_template_send_rules(
+        template, *, to_number: str | None = None) -> None:
+    """Enforce template status + opt-in requirements before sending."""
+    if not template:
+        frappe.throw(_("Template is required to send a template message."))
+
+    status = (getattr(template, "status", "") or "").strip().upper()
+    if status != "APPROVED":
+        frappe.throw(
+            _("Template is not approved for sending (status: {0}).").format(
+                getattr(template, "status", "") or "Unknown"
+            )
+        )
+
+    requires_opt_in = bool(getattr(template, "requires_opt_in", 0))
+    if not requires_opt_in:
+        return
+
+    number = format_number(str(to_number or ""))
+    if not number:
+        frappe.throw(_("Cannot verify opt-in without a recipient number."))
+
+    from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_profiles.whatsapp_profiles import WhatsAppProfiles  # noqa: E501
+    profile = frappe.db.get_all(
+        "WhatsApp Profiles",
+        filters={"number": number},
+        fields=["name", "do_not_contact", "is_opted_out", "is_opted_in"],
+        limit=1,
+    )
+
+    if not profile:
+        frappe.throw(
+            _("Recipient has not opted in to receive this template."))
+
+    profile = cast(
+        WhatsAppProfiles,
+        frappe.get_doc("WhatsApp Profiles", profile[0].name))
+
+    if profile.do_not_contact or profile.is_opted_out:
+        frappe.throw(
+            _("Recipient has opted out. Cannot send this template."))
+
+    if not profile.is_opted_in:
+        frappe.throw(
+            _("Recipient has not explicitly opted in to receive this "
+              "template."))

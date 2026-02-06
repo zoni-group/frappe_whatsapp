@@ -79,7 +79,8 @@ class WhatsAppTemplates(Document):
             self.update_template()
 
     def _apply_marketing_unsubscribe_rules(self) -> None:
-        """Auto-inject unsubscribe text for marketing templates when enabled."""
+        """Auto-inject unsubscribe text for marketing templates
+           when enabled."""
         if self.category != "MARKETING":
             return
 
