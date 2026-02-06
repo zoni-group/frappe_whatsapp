@@ -144,7 +144,7 @@
    "fieldname": "opted_out_source",
    "fieldtype": "Select",
    "label": "Opted Out Source",
-   "options": "User Request\nKeyword\nManual\nComplaint\nBounce"
+   "options": "\nUser Request\nKeyword\nManual\nComplaint\nBounce"
   },
   {
    "default": "0",
@@ -199,7 +199,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-02-06 12:14:02.730100",
+ "modified": "2026-02-06 14:03:56.159207",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Profiles",

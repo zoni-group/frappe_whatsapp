@@ -29,7 +29,7 @@ class WhatsAppProfiles(Document):
         opted_in_source: DF.Data | None
         opted_out_at: DF.Datetime | None
         opted_out_reason: DF.Data | None
-        opted_out_source: DF.Literal["User Request", "Keyword", "Manual", "Complaint", "Bounce"]
+        opted_out_source: DF.Literal["", "User Request", "Keyword", "Manual", "Complaint", "Bounce"]
         profile_name: DF.Data | None
         title: DF.Data | None
         whatsapp_account: DF.Link | None
