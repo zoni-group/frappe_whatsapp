@@ -559,14 +559,17 @@ def fetch() -> str:
                     continue
 
                 # load or create
-                if frappe.db.exists(
-                        "WhatsApp Templates",
-                        {"actual_name": template_name}):
+                existing_name = frappe.db.get_value(
+                    "WhatsApp Templates",
+                    {"actual_name": template_name},
+                    "name",
+                )
+                if existing_name:
                     doc = cast(
                         WhatsAppTemplates,
                         frappe.get_doc(
                             "WhatsApp Templates",
-                            str(template_name),
+                            str(existing_name),
                         ))
                 else:
                     doc = cast(

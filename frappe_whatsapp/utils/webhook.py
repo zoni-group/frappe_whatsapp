@@ -274,7 +274,7 @@ def _process_incoming_message(
             "message_id": msg_id,
             "reply_to_message_id": reply_to_message_id,
             "is_reply": is_reply,
-            "message": raw_body,
+            "message": body_text,
             "content_type": message_type or "unknown",
             "profile_name": sender_profile_name,
             "whatsapp_account": whatsapp_account.name,
@@ -411,15 +411,21 @@ def _handle_interactive(
 
 def update_status(data):
     """Update status hook."""
+    value = data.get("value")
+    if not isinstance(value, dict):
+        return
+
     if data.get("field") == "message_template_status_update":
-        update_template_status(data['value'])
+        update_template_status(value)
 
     elif data.get("field") == "messages":
-        update_message_status(data['value'])
+        update_message_status(value)
 
 
 def update_template_status(data):
     """Update template status."""
+    if not data.get("event") or not data.get("message_template_id"):
+        return
     frappe.db.sql(
         """UPDATE `tabWhatsApp Templates`
         SET status = %(event)s
@@ -430,10 +436,21 @@ def update_template_status(data):
 
 def update_message_status(data):
     """Update message status."""
-    id = data['statuses'][0]['id']
-    status = data['statuses'][0]['status']
-    conversation = data['statuses'][0].get('conversation', {}).get('id')
-    name = frappe.db.get_value("WhatsApp Message", filters={"message_id": id})
+    statuses = data.get("statuses")
+    if not statuses or not isinstance(statuses, list):
+        return
+
+    first = statuses[0]
+    if not isinstance(first, dict):
+        return
+
+    msg_id = first.get("id")
+    status = first.get("status")
+    if not msg_id or not status:
+        return
+
+    conversation = (first.get("conversation") or {}).get("id")
+    name = frappe.db.get_value("WhatsApp Message", filters={"message_id": msg_id})
     if not name:
         return
 

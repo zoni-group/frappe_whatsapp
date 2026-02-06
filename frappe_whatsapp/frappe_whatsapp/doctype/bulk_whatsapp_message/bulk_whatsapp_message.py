@@ -168,12 +168,12 @@ class BulkWhatsAppMessage(Document):
         wa_message.status = "Queued"
         try:
             wa_message.insert(ignore_permissions=True)
+            # Update message count only on successful insert
+            self.db_set("sent_count", cint(self.sent_count) + 1)
+            if cint(self.sent_count) >= cint(self.recipient_count):
+                self.db_set("status", "Completed")
         except Exception:
             self.db_set("status", "Partially Failed")
-        # Update message count
-        self.db_set("sent_count", cint(self.sent_count) + 1)
-        if self.recipient_count == self.sent_count:
-            self.db_set("status", "Completed")
 
     def retry_failed(self):
         """Retry failed messages"""

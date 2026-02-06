@@ -314,9 +314,9 @@ class WhatsAppNotification(Document):
                     "components": []
                 }
             }
-            self.content_type = template.get("header_type", "text").lower()
+            self.content_type = (template.header_type or "text").lower()
             self.notify(
-                data, template_account=template.get("whatsapp_account"))
+                data, template_account=template.whatsapp_account)
 
     def send_template_message(
             self, doc: Document, phone_no=None,
@@ -450,8 +450,8 @@ class WhatsAppNotification(Document):
                 filename = self.file_name
 
                 if self.attach_from_field:
-                    file_url = doc_data[self.attach_from_field]
-                    if not file_url.startswith("http"):
+                    file_url = doc_data.get(self.attach_from_field) or ""
+                    if file_url and not file_url.startswith("http"):
                         # get share key so that private files can be sent
                         key = doc.get_document_share_key()
                         file_url = f'{get_url()}{file_url}&key={key}'
