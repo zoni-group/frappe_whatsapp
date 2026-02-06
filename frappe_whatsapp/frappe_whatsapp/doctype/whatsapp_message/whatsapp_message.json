@@ -45,7 +45,14 @@
   "section_break_fs5x",
   "source_app",
   "routed_app",
-  "external_reference"
+  "external_reference",
+  "compliance_section",
+  "consent_checked",
+  "consent_status_at_send",
+  "consent_bypass_reason",
+  "within_conversation_window",
+  "is_opt_out_request",
+  "is_opt_in_request"
  ],
  "fields": [
   {
@@ -304,11 +311,57 @@
    "fieldname": "external_reference",
    "fieldtype": "Data",
    "label": "External Reference"
+  },
+  {
+   "fieldname": "compliance_section",
+   "fieldtype": "Section Break",
+   "label": "Compliance"
+  },
+  {
+   "default": "0",
+   "description": "Whether consent was verified",
+   "fieldname": "consent_checked",
+   "fieldtype": "Check",
+   "label": "Consent Checked"
+  },
+  {
+   "description": "Recipient consent status when sent",
+   "fieldname": "consent_status_at_send",
+   "fieldtype": "Select",
+   "label": "Consent Status At Send",
+   "options": "Opted In\nOpted Out\nUnknown\nBypassed"
+  },
+  {
+   "description": "Why consent was bypassed (if applicable)",
+   "fieldname": "consent_bypass_reason",
+   "fieldtype": "Data",
+   "label": "Consent Bypass Reason"
+  },
+  {
+   "default": "0",
+   "description": "Was message within 24h window",
+   "fieldname": "within_conversation_window",
+   "fieldtype": "Check",
+   "label": "Within Conversation Window"
+  },
+  {
+   "default": "0",
+   "description": "Message was an opt-out request",
+   "fieldname": "is_opt_out_request",
+   "fieldtype": "Check",
+   "label": "Is Opt-Out Request"
+  },
+  {
+   "default": "0",
+   "description": "Message was an opt-in request",
+   "fieldname": "is_opt_in_request",
+   "fieldtype": "Check",
+   "label": "Is Opt-In Request"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-01-21 16:13:42.201539",
+ "modified": "2026-02-06 12:35:57.895306",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Message",

@@ -28,13 +28,17 @@ class BulkWhatsAppMessage(Document):
 
         amended_from: DF.Link | None
         attach: DF.Attach | None
+        filter_by_consent: DF.Check
         from_number: DF.Data | None
         recipient_count: DF.Int
         recipient_list: DF.Link | None
         recipient_type: DF.Literal["", "Individual", "Recipient List"]
         recipients: DF.Table[WhatsAppRecipient]
+        required_consent_category: DF.Link | None
         scheduled_time: DF.Datetime | None
         sent_count: DF.Int
+        skip_opted_out: DF.Check
+        skipped_count: DF.Int
         status: DF.Literal["Draft", "Queued", "In Progress", "Completed", "Partially Failed"]
         template: DF.Link | None
         template_variables: DF.Code | None

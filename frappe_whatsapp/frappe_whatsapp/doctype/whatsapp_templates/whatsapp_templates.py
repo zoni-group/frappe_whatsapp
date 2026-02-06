@@ -37,13 +37,18 @@ class WhatsAppTemplates(Document):
         header: DF.Data | None
         header_type: DF.Literal["", "TEXT", "DOCUMENT", "IMAGE"]
         id: DF.Data | None
+        include_unsubscribe_instructions: DF.Check
+        is_transactional: DF.Check
         language: DF.Link
         language_code: DF.Data | None
+        required_consent_category: DF.Link | None
+        requires_opt_in: DF.Check
         sample: DF.Attach | None
         sample_values: DF.SmallText | None
         status: DF.Data | None
         template: DF.Code
         template_name: DF.Data
+        unsubscribe_text: DF.Data | None
         whatsapp_account: DF.Link | None
     # end: auto-generated types
     """Create whatsapp template."""

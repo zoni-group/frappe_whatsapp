@@ -1,0 +1,209 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-02-06 11:11:37.681666",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "opt_out_settings_section",
+  "enable_opt_out_detection",
+  "opt_out_confirmation_message",
+  "send_opt_out_confirmation",
+  "opt_out_confirmation_template",
+  "opt_in_settings_section",
+  "enable_opt_in_detection",
+  "opt_in_keywords",
+  "opt_in_confirmation_message",
+  "send_opt_in_confirmation",
+  "consent_enforcement_section",
+  "enforce_consent_check",
+  "consent_check_mode",
+  "allow_transactional_without_consent",
+  "24_hour_window_section",
+  "enforce_24_hour_window",
+  "window_hours",
+  "allow_reply_outside_window",
+  "privacy_and_compliance_section",
+  "privacy_policy_url",
+  "terms_of_service_url",
+  "default_unsubscribe_text",
+  "include_unsubscribe_in_marketing"
+ ],
+ "fields": [
+  {
+   "default": "1",
+   "description": "Process incoming messages for opt-out keywords",
+   "fieldname": "enable_opt_out_detection",
+   "fieldtype": "Check",
+   "label": "Enable Opt-Out Detection"
+  },
+  {
+   "fieldname": "opt_out_settings_section",
+   "fieldtype": "Section Break",
+   "label": "Opt-Out Settings"
+  },
+  {
+   "default": "You have been unsubscribed. Reply START to subscribe again.",
+   "description": "Message sent after opt-out",
+   "fieldname": "opt_out_confirmation_message",
+   "fieldtype": "Small Text",
+   "label": "Opt-Out Confirmation Message"
+  },
+  {
+   "default": "1",
+   "description": "Whether to send confirmation",
+   "fieldname": "send_opt_out_confirmation",
+   "fieldtype": "Check",
+   "label": "Send Opt-Out Confirmation"
+  },
+  {
+   "fieldname": "opt_out_confirmation_template",
+   "fieldtype": "Link",
+   "label": "Opt-Out Confirmation Template",
+   "options": "WhatsApp Templates"
+  },
+  {
+   "default": "1",
+   "description": "Process START/SUBSCRIBE keywords",
+   "fieldname": "enable_opt_in_detection",
+   "fieldtype": "Check",
+   "label": "Enable Opt-In Detection"
+  },
+  {
+   "default": "START,SUBSCRIBE,YES",
+   "description": "Comma-separated keywords",
+   "fieldname": "opt_in_keywords",
+   "fieldtype": "Small Text",
+   "label": "Opt-In Keywords"
+  },
+  {
+   "default": "You have been subscribed to our messages.",
+   "description": "Message sent after opt-in",
+   "fieldname": "opt_in_confirmation_message",
+   "fieldtype": "Small Text",
+   "label": "Opt-In Confirmation Message"
+  },
+  {
+   "default": "1",
+   "description": "Whether to send confirmation",
+   "fieldname": "send_opt_in_confirmation",
+   "fieldtype": "Check",
+   "label": "Send Opt-In Confirmation"
+  },
+  {
+   "fieldname": "consent_enforcement_section",
+   "fieldtype": "Section Break",
+   "label": "Consent Enforcement"
+  },
+  {
+   "fieldname": "opt_in_settings_section",
+   "fieldtype": "Section Break",
+   "label": "Opt-In Settings"
+  },
+  {
+   "default": "1",
+   "description": "Block messages to non-consented users",
+   "fieldname": "enforce_consent_check",
+   "fieldtype": "Check",
+   "label": "Enforce Consent Check"
+  },
+  {
+   "default": "Strict",
+   "description": "How to handle consent violations",
+   "fieldname": "consent_check_mode",
+   "fieldtype": "Select",
+   "label": "Consent Check Mode",
+   "options": "Strict\nWarning Only\nDisabled"
+  },
+  {
+   "default": "0",
+   "description": "Allow transactional messages without explicit consent",
+   "fieldname": "allow_transactional_without_consent",
+   "fieldtype": "Check",
+   "label": "Allow Transactional Without Consent"
+  },
+  {
+   "fieldname": "24_hour_window_section",
+   "fieldtype": "Section Break",
+   "label": "24-Hour Window"
+  },
+  {
+   "default": "1",
+   "description": "Enforce template-only outside 24h",
+   "fieldname": "enforce_24_hour_window",
+   "fieldtype": "Check",
+   "label": "Enforce 24-Hour Window"
+  },
+  {
+   "default": "24",
+   "description": "Hours after last incoming message",
+   "fieldname": "window_hours",
+   "fieldtype": "Int",
+   "label": "Conversation Window (Hours)"
+  },
+  {
+   "default": "0",
+   "description": "Allow replies even outside window",
+   "fieldname": "allow_reply_outside_window",
+   "fieldtype": "Check",
+   "label": "Allow Reply Outside Window"
+  },
+  {
+   "fieldname": "privacy_and_compliance_section",
+   "fieldtype": "Section Break",
+   "label": "Privacy & Compliance"
+  },
+  {
+   "description": "Link to privacy policy",
+   "fieldname": "privacy_policy_url",
+   "fieldtype": "Data",
+   "label": "Privacy Policy URL"
+  },
+  {
+   "description": "Link to terms of service",
+   "fieldname": "terms_of_service_url",
+   "fieldtype": "Data",
+   "label": "Terms of Service URL"
+  },
+  {
+   "default": "Reply STOP to unsubscribe",
+   "description": "Default text for messages",
+   "fieldname": "default_unsubscribe_text",
+   "fieldtype": "Small Text",
+   "label": "Default Unsubscribe Text"
+  },
+  {
+   "default": "1",
+   "description": "Auto-add unsubscribe text to marketing",
+   "fieldname": "include_unsubscribe_in_marketing",
+   "fieldtype": "Check",
+   "label": "Include Unsubscribe in Marketing"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-02-06 11:41:59.218389",
+ "modified_by": "Administrator",
+ "module": "Frappe Whatsapp",
+ "name": "WhatsApp Compliance Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

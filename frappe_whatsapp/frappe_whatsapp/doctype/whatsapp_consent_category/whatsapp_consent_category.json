@@ -1,0 +1,90 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:category_code",
+ "creation": "2026-02-05 11:02:10.190902",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "category_name",
+  "category_code",
+  "description",
+  "requires_explicit_consent",
+  "is_enabled",
+  "default_opt_in"
+ ],
+ "fields": [
+  {
+   "description": "e.g., \"Marketing\", \"Transactional\", \"OTP\"",
+   "fieldname": "category_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Category Name",
+   "reqd": 1
+  },
+  {
+   "description": "Unique code: \"MARKETING\", \"TRANSACTIONAL\", \"OTP\", \"UTILITY\"",
+   "fieldname": "category_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Category Code",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "description": "Description of what this category covers",
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "default": "0",
+   "description": "Whether explicit opt-in is required",
+   "fieldname": "requires_explicit_consent",
+   "fieldtype": "Check",
+   "label": "Requires Explicit Consent"
+  },
+  {
+   "default": "0",
+   "description": "Whether this category is active",
+   "fieldname": "is_enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "default": "0",
+   "description": "Auto opt-in new contacts to this category",
+   "fieldname": "default_opt_in",
+   "fieldtype": "Check",
+   "label": "Default Opt-In"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-02-05 11:08:40.765132",
+ "modified_by": "Administrator",
+ "module": "Frappe Whatsapp",
+ "name": "WhatsApp Consent Category",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

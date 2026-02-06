@@ -42,6 +42,9 @@ class WhatsAppMessage(Document):
         body_param: DF.JSON | None
         bulk_message_reference: DF.Data | None
         buttons: DF.JSON | None
+        consent_bypass_reason: DF.Data | None
+        consent_checked: DF.Check
+        consent_status_at_send: DF.Literal["Opted In", "Opted Out", "Unknown", "Bypassed"]
         content_type: DF.Literal["text", "document", "image", "video", "audio", "flow", "reaction", "location", "contact", "button", "interactive"]
         conversation_id: DF.Data | None
         external_reference: DF.Data | None
@@ -50,6 +53,8 @@ class WhatsAppMessage(Document):
         flow_response: DF.JSON | None
         flow_screen: DF.Data | None
         flow_token: DF.Data | None
+        is_opt_in_request: DF.Check
+        is_opt_out_request: DF.Check
         is_reply: DF.Check
         label: DF.Data | None
         message: DF.HTMLEditor | None
@@ -69,6 +74,7 @@ class WhatsAppMessage(Document):
         type: DF.Literal["Outgoing", "Incoming"]
         use_template: DF.Check
         whatsapp_account: DF.Link | None
+        within_conversation_window: DF.Check
     # end: auto-generated types
 
     def validate(self):

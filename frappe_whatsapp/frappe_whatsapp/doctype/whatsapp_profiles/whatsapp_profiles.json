@@ -12,7 +12,26 @@
   "contact",
   "column_break_qdww",
   "title",
-  "whatsapp_account"
+  "whatsapp_account",
+  "consent_status_section",
+  "consent_status",
+  "section_break_grzi",
+  "is_opted_in",
+  "opted_in_at",
+  "opted_in_method",
+  "opted_in_source",
+  "column_break_zd9z",
+  "is_opted_out",
+  "opted_out_at",
+  "opted_out_reason",
+  "opted_out_source",
+  "do_not_contact_section",
+  "do_not_contact",
+  "do_not_contact_reason",
+  "compliance_metadata_section",
+  "consent_version",
+  "gdpr_consent",
+  "consent_ip_address"
  ],
  "fields": [
   {
@@ -61,12 +80,126 @@
    "fieldtype": "Link",
    "label": "WhatsApp Account",
    "options": "WhatsApp Account"
+  },
+  {
+   "fieldname": "consent_status_section",
+   "fieldtype": "Section Break",
+   "label": "Consent Status"
+  },
+  {
+   "default": "Unknown",
+   "description": "Overall consent status",
+   "fieldname": "consent_status",
+   "fieldtype": "Select",
+   "label": "Consent Status",
+   "options": "Unknown\nOpted In\nOpted Out\nPartial"
+  },
+  {
+   "default": "0",
+   "description": "Master opt-in flag",
+   "fieldname": "is_opted_in",
+   "fieldtype": "Check",
+   "label": "Is Opted In"
+  },
+  {
+   "description": "When user opted in",
+   "fieldname": "opted_in_at",
+   "fieldtype": "Datetime",
+   "label": "Opted In At"
+  },
+  {
+   "description": "How opt-in was obtained",
+   "fieldname": "opted_in_method",
+   "fieldtype": "Select",
+   "label": "Opted In Method",
+   "options": "Explicit Form\nAPI\nImported\nWeb Widget\nWhatsApp Reply\nLegacy"
+  },
+  {
+   "description": "Source details (form name, API client, etc.)",
+   "fieldname": "opted_in_source",
+   "fieldtype": "Data",
+   "label": "Opted In Source"
+  },
+  {
+   "default": "0",
+   "description": "Master opt-out flag",
+   "fieldname": "is_opted_out",
+   "fieldtype": "Check",
+   "label": "Is Opted Out"
+  },
+  {
+   "description": "When user opted out",
+   "fieldname": "opted_out_at",
+   "fieldtype": "Datetime",
+   "label": "Opted Out At"
+  },
+  {
+   "description": "Reason for opt-out",
+   "fieldname": "opted_out_reason",
+   "fieldtype": "Data",
+   "label": "Opted Out Reason"
+  },
+  {
+   "description": "How opt-out was triggered",
+   "fieldname": "opted_out_source",
+   "fieldtype": "Select",
+   "label": "Opted Out Source",
+   "options": "User Request\nKeyword\nManual\nComplaint\nBounce"
+  },
+  {
+   "default": "0",
+   "description": "Hard block - never contact",
+   "fieldname": "do_not_contact",
+   "fieldtype": "Check",
+   "label": "Do Not Contact"
+  },
+  {
+   "description": "Reason for DNC status",
+   "fieldname": "do_not_contact_reason",
+   "fieldtype": "Small Text",
+   "label": "Do Not Contact Reason"
+  },
+  {
+   "fieldname": "compliance_metadata_section",
+   "fieldtype": "Section Break",
+   "label": "Compliance Metadata"
+  },
+  {
+   "description": "Policy version consented to",
+   "fieldname": "consent_version",
+   "fieldtype": "Data",
+   "label": "Consent Version"
+  },
+  {
+   "default": "0",
+   "description": "For EU compliance",
+   "fieldname": "gdpr_consent",
+   "fieldtype": "Check",
+   "label": "GDPR Consent"
+  },
+  {
+   "description": "IP when consent given",
+   "fieldname": "consent_ip_address",
+   "fieldtype": "Data",
+   "label": "Consent IP Address"
+  },
+  {
+   "fieldname": "column_break_zd9z",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "do_not_contact_section",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "section_break_grzi",
+   "fieldtype": "Section Break"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-06-19 19:51:11.001227",
+ "modified": "2026-02-06 12:14:02.730100",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Profiles",

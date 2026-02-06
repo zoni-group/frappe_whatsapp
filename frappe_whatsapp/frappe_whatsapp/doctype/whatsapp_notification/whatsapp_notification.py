@@ -71,6 +71,7 @@ class WhatsAppNotification(Document):
         attach_document_print: DF.Check
         attach_from_field: DF.Data | None
         button_fields: DF.Data | None
+        check_consent_before_send: DF.Check
         code: DF.Code | None
         condition: DF.Code | None
         custom_attachment: DF.Check
@@ -83,11 +84,14 @@ class WhatsAppNotification(Document):
         fields: DF.Table[WhatsAppMessageFields]
         file_name: DF.Data | None
         header_type: DF.Data | None
+        is_transactional: DF.Check
         notification_name: DF.Data
         notification_type: DF.Literal["DocType Event", "Scheduler Event"]
         property_value: DF.Data | None
         reference_doctype: DF.Link
+        required_consent_category: DF.Link | None
         set_property_after_alert: DF.Literal[None]
+        skip_opted_out_recipients: DF.Check
         template: DF.Link
     # end: auto-generated types
     """Notification."""

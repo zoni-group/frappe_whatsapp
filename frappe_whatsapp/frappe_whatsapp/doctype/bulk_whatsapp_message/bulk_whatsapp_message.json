@@ -27,7 +27,12 @@
   "scheduled_time",
   "column_break_hwbk",
   "amended_from",
-  "sent_count"
+  "sent_count",
+  "consent_filtering_section",
+  "filter_by_consent",
+  "required_consent_category",
+  "skip_opted_out",
+  "skipped_count"
  ],
  "fields": [
   {
@@ -169,12 +174,44 @@
   {
    "fieldname": "column_break_hwbk",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "consent_filtering_section",
+   "fieldtype": "Section Break",
+   "label": "Consent Filtering"
+  },
+  {
+   "default": "1",
+   "description": "Only send to consented users",
+   "fieldname": "filter_by_consent",
+   "fieldtype": "Check",
+   "label": "Filter by Consent"
+  },
+  {
+   "description": "Category filter",
+   "fieldname": "required_consent_category",
+   "fieldtype": "Link",
+   "label": "Required Consent Category",
+   "options": "WhatsApp Consent Category"
+  },
+  {
+   "default": "1",
+   "description": "Exclude opted-out users",
+   "fieldname": "skip_opted_out",
+   "fieldtype": "Check",
+   "label": "Skip Opted Out"
+  },
+  {
+   "description": "Count of skipped recipients",
+   "fieldname": "skipped_count",
+   "fieldtype": "Int",
+   "label": "Skipped (No Consent)"
   }
  ],
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-01-30 10:55:48.953904",
+ "modified": "2026-02-06 12:45:12.623849",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "Bulk WhatsApp Message",

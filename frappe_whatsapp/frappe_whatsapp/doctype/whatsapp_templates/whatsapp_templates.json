@@ -29,7 +29,13 @@
   "column_break_tbvf",
   "footer",
   "section_break_wu2vp",
-  "buttons"
+  "buttons",
+  "compliance_section",
+  "required_consent_category",
+  "requires_opt_in",
+  "include_unsubscribe_instructions",
+  "unsubscribe_text",
+  "is_transactional"
  ],
  "fields": [
   {
@@ -165,12 +171,51 @@
    "fieldtype": "Link",
    "label": "WhatsApp Account",
    "options": "WhatsApp Account"
+  },
+  {
+   "fieldname": "compliance_section",
+   "fieldtype": "Section Break",
+   "label": "Compliance"
+  },
+  {
+   "description": "Category required to send this template",
+   "fieldname": "required_consent_category",
+   "fieldtype": "Link",
+   "label": "Required Consent Category",
+   "options": "WhatsApp Consent Category"
+  },
+  {
+   "default": "0",
+   "description": "Whether recipient must be opted in",
+   "fieldname": "requires_opt_in",
+   "fieldtype": "Check",
+   "label": "Requires Opt-In"
+  },
+  {
+   "default": "0",
+   "description": "Add unsubscribe text",
+   "fieldname": "include_unsubscribe_instructions",
+   "fieldtype": "Check",
+   "label": "Include Unsubscribe Instructions"
+  },
+  {
+   "description": "Custom unsubscribe text",
+   "fieldname": "unsubscribe_text",
+   "fieldtype": "Data",
+   "label": "Unsubscribe Text"
+  },
+  {
+   "default": "0",
+   "description": "Mark as transactional (may bypass some consent)",
+   "fieldname": "is_transactional",
+   "fieldtype": "Check",
+   "label": "Is Transactional"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-01-21 17:24:31.250160",
+ "modified": "2026-02-06 12:23:55.048706",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Templates",
