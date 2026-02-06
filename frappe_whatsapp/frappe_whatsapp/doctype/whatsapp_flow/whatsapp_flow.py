@@ -5,7 +5,7 @@ import json
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.integrations.utils import make_post_request, make_request
+from frappe.integrations.utils import make_post_request
 
 
 class WhatsAppFlow(Document):

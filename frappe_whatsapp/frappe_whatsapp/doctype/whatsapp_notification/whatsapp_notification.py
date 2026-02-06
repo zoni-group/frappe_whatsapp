@@ -14,6 +14,11 @@ from frappe.model import numeric_fieldtypes
 from datetime import datetime as py_datetime, time as py_time
 
 from frappe_whatsapp.utils import get_whatsapp_account
+from frappe_whatsapp.utils.consent import (
+    verify_consent_for_send,
+    enforce_marketing_template_compliance,
+    enforce_template_send_rules,
+)
 from typing import Any, cast, TypedDict, Optional
 
 
@@ -71,6 +76,7 @@ class WhatsAppNotification(Document):
         attach_document_print: DF.Check
         attach_from_field: DF.Data | None
         button_fields: DF.Data | None
+        check_consent_before_send: DF.Check
         code: DF.Code | None
         condition: DF.Code | None
         custom_attachment: DF.Check
@@ -83,11 +89,14 @@ class WhatsAppNotification(Document):
         fields: DF.Table[WhatsAppMessageFields]
         file_name: DF.Data | None
         header_type: DF.Data | None
+        is_transactional: DF.Check
         notification_name: DF.Data
         notification_type: DF.Literal["DocType Event", "Scheduler Event"]
         property_value: DF.Data | None
         reference_doctype: DF.Link
+        required_consent_category: DF.Link | None
         set_property_after_alert: DF.Literal[None]
+        skip_opted_out_recipients: DF.Check
         template: DF.Link
     # end: auto-generated types
     """Notification."""
@@ -214,6 +223,7 @@ class WhatsAppNotification(Document):
         template = cast(
             WhatsAppTemplates,
             frappe.get_doc("WhatsApp Templates", self.template))
+        enforce_marketing_template_compliance(template)
 
         if not getattr(template, "language_code", None):
             return {
@@ -274,6 +284,24 @@ class WhatsAppNotification(Document):
     def send_simple_template(self, template):
         """ send simple template without a doc to get field data """
         for contact in self._contact_list:
+            try:
+                enforce_template_send_rules(template, to_number=contact)
+            except Exception as exc:
+                frappe.logger().info(
+                    f"Skipping {contact}: {str(exc)}")
+                continue
+            # Consent check: skip recipients who haven't consented
+            if self.check_consent_before_send:
+                result = verify_consent_for_send(
+                    str(contact),
+                    consent_category=self.required_consent_category,
+                    is_transactional=bool(self.is_transactional),
+                )
+                if not result.allowed:
+                    frappe.logger().info(
+                        f"Skipping {contact}: {result.reason}")
+                    continue
+
             data = {
                 "messaging_product": "whatsapp",
                 "to": self.format_number(contact),
@@ -286,9 +314,9 @@ class WhatsAppNotification(Document):
                     "components": []
                 }
             }
-            self.content_type = template.get("header_type", "text").lower()
+            self.content_type = (template.header_type or "text").lower()
             self.notify(
-                data, template_account=template.get("whatsapp_account"))
+                data, template_account=template.whatsapp_account)
 
     def send_template_message(
             self, doc: Document, phone_no=None,
@@ -309,12 +337,29 @@ class WhatsAppNotification(Document):
             "WhatsApp Templates", self.template)
         from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_templates.whatsapp_templates import WhatsAppTemplates  # noqa
         template = cast(WhatsAppTemplates, template)
+        enforce_marketing_template_compliance(template)
 
         if template:
             if self.field_name:
                 phone_number = phone_no or doc_data[self.field_name]
             else:
                 phone_number = phone_no
+
+            enforce_template_send_rules(
+                template, to_number=str(phone_number or ""))
+
+            # Consent check: skip if recipient hasn't consented
+            if self.check_consent_before_send and phone_number:
+                result = verify_consent_for_send(
+                    str(phone_number),
+                    consent_category=self.required_consent_category,
+                    is_transactional=bool(self.is_transactional),
+                )
+                if not result.allowed:
+                    frappe.logger().info(
+                        f"Skipping notification to"
+                        f" {phone_number}: {result.reason}")
+                    return
 
             data = {
                 "messaging_product": "whatsapp",
@@ -405,8 +450,8 @@ class WhatsAppNotification(Document):
                 filename = self.file_name
 
                 if self.attach_from_field:
-                    file_url = doc_data[self.attach_from_field]
-                    if not file_url.startswith("http"):
+                    file_url = doc_data.get(self.attach_from_field) or ""
+                    if file_url and not file_url.startswith("http"):
                         # get share key so that private files can be sent
                         key = doc.get_document_share_key()
                         file_url = f'{get_url()}{file_url}&key={key}'
@@ -429,6 +474,7 @@ class WhatsAppNotification(Document):
                         }
                     }]
                 })
+                self.content_type = "document"
             elif template.header_type == 'IMAGE':
                 data['template']['components'].append({
                     "type": "header",
@@ -439,7 +485,10 @@ class WhatsAppNotification(Document):
                         }
                     }]
                 })
-            self.content_type = template.header_type.lower()
+                self.content_type = "image"
+            else:
+                # Default to text for empty or TEXT header types
+                self.content_type = "text"
 
             if template.buttons:
                 button_fields = self.button_fields.split(

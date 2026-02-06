@@ -34,11 +34,20 @@ def run_server_script_for_doc_event(doc, event):
 
 
 def get_notifications_map():
-    """Get mapping."""
+    """Get mapping of doctypes to their WhatsApp notification triggers.
+
+    Returns cached map if available, otherwise builds and caches it.
+    """
     if frappe.flags.in_patch and not frappe.db.table_exists(
             "WhatsApp Notification"):
         return {}
 
+    # Check cache first
+    notification_map = frappe.cache().get_value("whatsapp_notification_map")
+    if notification_map is not None:
+        return notification_map
+
+    # Build map from database
     notification_map = {}
     enabled_whatsapp_notifications = frappe.get_all(
         "WhatsApp Notification",
@@ -152,9 +161,17 @@ def get_whatsapp_account(
     return None
 
 
-def format_number(number):
-    """Format number."""
-    if number.startswith("+"):
-        number = number[1: len(number)]
+def format_number(number: str | None) -> str:
+    """Format number by removing leading '+' if present.
 
+    Args:
+        number: Phone number string, may be None.
+
+    Returns:
+        Formatted number without leading '+', or empty string if None.
+    """
+    if not number:
+        return ""
+    if number.startswith("+"):
+        number = number[1:]
     return number

@@ -9,6 +9,8 @@ from frappe.model.document import Document
 from frappe.model.naming import make_autoname
 from typing import cast
 
+from frappe_whatsapp.utils.consent import verify_consent_for_send
+
 # Add these files to your frappe_whatsapp app
 
 # 1. First, create a new DocType for Bulk WhatsApp Messaging
@@ -28,13 +30,17 @@ class BulkWhatsAppMessage(Document):
 
         amended_from: DF.Link | None
         attach: DF.Attach | None
+        filter_by_consent: DF.Check
         from_number: DF.Data | None
         recipient_count: DF.Int
         recipient_list: DF.Link | None
         recipient_type: DF.Literal["", "Individual", "Recipient List"]
         recipients: DF.Table[WhatsAppRecipient]
+        required_consent_category: DF.Link | None
         scheduled_time: DF.Datetime | None
         sent_count: DF.Int
+        skip_opted_out: DF.Check
+        skipped_count: DF.Int
         status: DF.Literal["Draft", "Queued", "In Progress", "Completed", "Partially Failed"]
         template: DF.Link | None
         template_variables: DF.Code | None
@@ -90,7 +96,8 @@ class BulkWhatsAppMessage(Document):
                 frappe.enqueue_doc(
                     self.doctype, self.name,
                     "create_single_message",
-                    "long", 4000,
+                    queue="long",
+                    timeout=4000,
                     recipient=recipient
                 )
         else:
@@ -99,13 +106,30 @@ class BulkWhatsAppMessage(Document):
                 frappe.enqueue_doc(
                     self.doctype, self.name,
                     "create_single_message",
-                    "long", 4000,
+                    queue="long",
+                    timeout=4000,
                     recipient=recipient
                 )
 
     def create_single_message(self, recipient):
         """Create a single message in the queue"""
-        # message_content = self.message_content
+        mobile = recipient.get("mobile_number")
+
+        # Consent check: skip recipients who haven't consented
+        if self.skip_opted_out and mobile:
+            result = verify_consent_for_send(
+                str(mobile),
+                consent_category=self.required_consent_category,
+                is_transactional=False,
+            )
+            if not result.allowed:
+                self.db_set(
+                    "skipped_count",
+                    cint(self.skipped_count) + 1)
+                frappe.logger().info(
+                    f"Bulk {self.name}: skipping"
+                    f" {mobile}: {result.reason}")
+                return
 
         # Replace variables in the message if any
         self.status = "In Progress"
@@ -144,12 +168,12 @@ class BulkWhatsAppMessage(Document):
         wa_message.status = "Queued"
         try:
             wa_message.insert(ignore_permissions=True)
+            # Update message count only on successful insert
+            self.db_set("sent_count", cint(self.sent_count) + 1)
+            if cint(self.sent_count) >= cint(self.recipient_count):
+                self.db_set("status", "Completed")
         except Exception:
             self.db_set("status", "Partially Failed")
-        # Update message count
-        self.db_set("sent_count", cint(self.sent_count) + 1)
-        if self.recipient_count == self.sent_count:
-            self.db_set("status", "Completed")
 
     def retry_failed(self):
         """Retry failed messages"""

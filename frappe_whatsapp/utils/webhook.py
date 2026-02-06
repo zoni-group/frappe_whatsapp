@@ -8,6 +8,14 @@ from typing import cast
 from frappe_whatsapp.utils import get_whatsapp_account
 from frappe_whatsapp.utils.routing import get_last_sender_app, \
     forward_incoming_to_app_async
+from frappe_whatsapp.utils.consent import (
+    check_opt_out_keyword,
+    check_opt_in_keyword,
+    process_opt_out,
+    process_opt_in,
+    send_opt_out_confirmation,
+    send_opt_in_confirmation,
+)
 
 
 @frappe.whitelist(allow_guest=True)
@@ -174,11 +182,13 @@ def _process_incoming_message(
         return
 
     if message_type == "text":
+        body_text = (message.get("text") or {}).get("body", "")
+
         doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Incoming",
             "from": message.get("from"),
-            "message": (message.get("text") or {}).get("body"),
+            "message": body_text,
             "message_id": msg_id,
             "reply_to_message_id": reply_to_message_id,
             "is_reply": is_reply,
@@ -188,7 +198,15 @@ def _process_incoming_message(
             "routed_app": last_app,
         }).insert(ignore_permissions=True)
 
-        # ✅ forward to client app in background
+        # Check for opt-out / opt-in keywords
+        _handle_consent_keywords(
+            body_text=body_text,
+            contact_number=contact_number,
+            whatsapp_account_name=str(whatsapp_account.name),
+            message_doc_name=str(doc.name),
+            profile_name=sender_profile_name,
+        )
+
         forward_incoming_to_app_async(incoming_message_name=str(doc.name))
 
     elif message_type == "interactive":
@@ -203,6 +221,7 @@ def _process_incoming_message(
 
     elif message_type in ["image", "audio", "video", "document"]:
         # Insert a stub message quickly, then download media async
+        caption_text = (message.get(message_type) or {}).get("caption", "")
         msg_doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Incoming",
@@ -210,12 +229,21 @@ def _process_incoming_message(
             "message_id": msg_id,
             "reply_to_message_id": reply_to_message_id,
             "is_reply": is_reply,
-            "message": message.get(message_type, {}).get("caption", ""),
+            "message": caption_text,
             "content_type": message_type,
             "profile_name": sender_profile_name,
             "whatsapp_account": whatsapp_account.name,
             "routed_app": last_app,
         }).insert(ignore_permissions=True)
+
+        # Check for opt-out / opt-in keywords in caption (if any)
+        _handle_consent_keywords(
+            body_text=caption_text or "",
+            contact_number=contact_number,
+            whatsapp_account_name=str(whatsapp_account.name),
+            message_doc_name=str(msg_doc.name),
+            profile_name=sender_profile_name,
+        )
 
         forward_incoming_to_app_async(incoming_message_name=str(msg_doc.name))
 
@@ -232,6 +260,13 @@ def _process_incoming_message(
             )
 
     else:
+        raw_body = message.get(message_type)
+        body_text = ""
+        if isinstance(raw_body, dict):
+            body_text = str(raw_body.get("text") or raw_body.get("body") or "")
+        elif isinstance(raw_body, str):
+            body_text = raw_body
+
         doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Incoming",
@@ -239,14 +274,60 @@ def _process_incoming_message(
             "message_id": msg_id,
             "reply_to_message_id": reply_to_message_id,
             "is_reply": is_reply,
-            "message": message.get(message_type),
+            "message": body_text,
             "content_type": message_type or "unknown",
             "profile_name": sender_profile_name,
             "whatsapp_account": whatsapp_account.name,
             "routed_app": last_app,
         }).insert(ignore_permissions=True)
 
+        # Check for opt-out / opt-in keywords if message contains text-like body
+        _handle_consent_keywords(
+            body_text=body_text or "",
+            contact_number=contact_number,
+            whatsapp_account_name=str(whatsapp_account.name),
+            message_doc_name=str(doc.name),
+            profile_name=sender_profile_name,
+        )
+
         forward_incoming_to_app_async(incoming_message_name=str(doc.name))
+
+
+def _handle_consent_keywords(
+        *, body_text: str, contact_number: str,
+        whatsapp_account_name: str, message_doc_name: str,
+        profile_name: str | None) -> None:
+    """Detect opt-out or opt-in keywords and update profile consent."""
+    # Check opt-out first (takes priority over opt-in)
+    keyword_match = check_opt_out_keyword(
+        body_text, whatsapp_account=whatsapp_account_name)
+
+    if keyword_match:
+        process_opt_out(
+            contact_number=contact_number,
+            whatsapp_account=whatsapp_account_name,
+            message_doc_name=message_doc_name,
+            keyword_match=keyword_match,
+            profile_name=profile_name,
+        )
+        send_opt_out_confirmation(
+            contact_number=contact_number,
+            whatsapp_account_name=whatsapp_account_name,
+        )
+        return
+
+    # Check opt-in
+    if check_opt_in_keyword(body_text):
+        process_opt_in(
+            contact_number=contact_number,
+            whatsapp_account=whatsapp_account_name,
+            message_doc_name=message_doc_name,
+            profile_name=profile_name,
+        )
+        send_opt_in_confirmation(
+            contact_number=contact_number,
+            whatsapp_account_name=whatsapp_account_name,
+        )
 
 
 def _handle_interactive(
@@ -258,6 +339,9 @@ def _handle_interactive(
     # button/list
     if interactive_type in ("button_reply", "list_reply"):
         payload = interactive.get(interactive_type) or {}
+        payload_text = (
+            str(payload.get("title") or payload.get("id") or "")
+        )
         doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Incoming",
@@ -271,6 +355,15 @@ def _handle_interactive(
             "whatsapp_account": whatsapp_account.name,
             "routed_app": last_app,
         }).insert(ignore_permissions=True)
+
+        # Check for opt-out / opt-in keywords based on reply text/id
+        _handle_consent_keywords(
+            body_text=payload_text,
+            contact_number=message.get("from"),
+            whatsapp_account_name=str(whatsapp_account.name),
+            message_doc_name=str(doc.name),
+            profile_name=sender_profile_name,
+        )
         forward_incoming_to_app_async(incoming_message_name=str(doc.name))
 
     # flows
@@ -318,15 +411,21 @@ def _handle_interactive(
 
 def update_status(data):
     """Update status hook."""
+    value = data.get("value")
+    if not isinstance(value, dict):
+        return
+
     if data.get("field") == "message_template_status_update":
-        update_template_status(data['value'])
+        update_template_status(value)
 
     elif data.get("field") == "messages":
-        update_message_status(data['value'])
+        update_message_status(value)
 
 
 def update_template_status(data):
     """Update template status."""
+    if not data.get("event") or not data.get("message_template_id"):
+        return
     frappe.db.sql(
         """UPDATE `tabWhatsApp Templates`
         SET status = %(event)s
@@ -337,10 +436,21 @@ def update_template_status(data):
 
 def update_message_status(data):
     """Update message status."""
-    id = data['statuses'][0]['id']
-    status = data['statuses'][0]['status']
-    conversation = data['statuses'][0].get('conversation', {}).get('id')
-    name = frappe.db.get_value("WhatsApp Message", filters={"message_id": id})
+    statuses = data.get("statuses")
+    if not statuses or not isinstance(statuses, list):
+        return
+
+    first = statuses[0]
+    if not isinstance(first, dict):
+        return
+
+    msg_id = first.get("id")
+    status = first.get("status")
+    if not msg_id or not status:
+        return
+
+    conversation = (first.get("conversation") or {}).get("id")
+    name = frappe.db.get_value("WhatsApp Message", filters={"message_id": msg_id})
     if not name:
         return
 
@@ -397,3 +507,23 @@ def download_and_attach_media(
         message_docname,
         "attach",
         file_doc.file_url)
+
+
+def publish_flow_realtime(
+        phone: str, message_id: str, flow_response: dict,
+        whatsapp_account: str):
+    """Publish a realtime event when a WhatsApp Flow response is received.
+
+    This allows the frontend to react to incoming flow responses.
+    """
+    frappe.publish_realtime(
+        event="whatsapp_flow_response",
+        message={
+            "phone": phone,
+            "message_id": message_id,
+            "flow_response": flow_response,
+            "whatsapp_account": whatsapp_account,
+        },
+        doctype="WhatsApp Message",
+        after_commit=True
+    )

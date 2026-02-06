@@ -34,7 +34,12 @@
   "property_value",
   "help_section",
   "help_html",
-  "header_type"
+  "header_type",
+  "consent_requirements_section",
+  "required_consent_category",
+  "check_consent_before_send",
+  "skip_opted_out_recipients",
+  "is_transactional"
  ],
  "fields": [
   {
@@ -215,11 +220,43 @@
    "fieldname": "button_fields",
    "fieldtype": "Data",
    "label": "Button Fields"
+  },
+  {
+   "fieldname": "consent_requirements_section",
+   "fieldtype": "Section Break",
+   "label": "Consent Requirements"
+  },
+  {
+   "fieldname": "required_consent_category",
+   "fieldtype": "Link",
+   "label": "Required Consent Category",
+   "options": "WhatsApp Consent Category"
+  },
+  {
+   "default": "0",
+   "description": "Verify consent before sending",
+   "fieldname": "check_consent_before_send",
+   "fieldtype": "Check",
+   "label": "Check Consent Before Send"
+  },
+  {
+   "default": "0",
+   "description": "Don't send to opted-out users",
+   "fieldname": "skip_opted_out_recipients",
+   "fieldtype": "Check",
+   "label": "Skip Opted Out Recipients"
+  },
+  {
+   "default": "0",
+   "description": "Transactional notification",
+   "fieldname": "is_transactional",
+   "fieldtype": "Check",
+   "label": "Is Transactional"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-01-23 16:58:01.786352",
+ "modified": "2026-02-06 12:39:47.088998",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Notification",

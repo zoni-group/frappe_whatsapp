@@ -57,7 +57,7 @@ def schedule_bulk_messages():
         })
         
         # If all messages are either sent or failed
-        if cint(bulk.sent_count) - failed_count + cint(failed_count) >= cint(bulk.recipient_count):
+        if cint(bulk.sent_count) + failed_count >= cint(bulk.recipient_count):
             if failed_count > 0:
                 frappe.db.set_value("Bulk WhatsApp Message", bulk.name, "status", "Partially Failed")
             else:

@@ -1,0 +1,94 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-02-05 16:50:10.566517",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "keyword",
+  "is_enabled",
+  "case_sensitive",
+  "match_type",
+  "action",
+  "target_category",
+  "whatsapp_account"
+ ],
+ "fields": [
+  {
+   "description": "The keyword (e.g., \"STOP\", \"UNSUBSCRIBE\")",
+   "fieldname": "keyword",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Keyword",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "description": "Whether this keyword is active",
+   "fieldname": "is_enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "default": "0",
+   "description": "Whether matching is case sensitive",
+   "fieldname": "case_sensitive",
+   "fieldtype": "Check",
+   "label": "Case Sensitive"
+  },
+  {
+   "description": "How to match the keyword",
+   "fieldname": "match_type",
+   "fieldtype": "Select",
+   "label": "Match Type",
+   "options": "Exact\nContains\nStarts With"
+  },
+  {
+   "description": "What action to take",
+   "fieldname": "action",
+   "fieldtype": "Select",
+   "label": "Action",
+   "options": "Full Opt-Out\nCategory Opt-Out"
+  },
+  {
+   "fieldname": "target_category",
+   "fieldtype": "Link",
+   "label": "Target Category",
+   "options": "WhatsApp Consent Category"
+  },
+  {
+   "description": "Specific account (blank = all)",
+   "fieldname": "whatsapp_account",
+   "fieldtype": "Link",
+   "label": "WhatsApp Account",
+   "options": "WhatsApp Account"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-02-05 16:59:09.134146",
+ "modified_by": "Administrator",
+ "module": "Frappe Whatsapp",
+ "name": "WhatsApp Opt Out Keyword",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
