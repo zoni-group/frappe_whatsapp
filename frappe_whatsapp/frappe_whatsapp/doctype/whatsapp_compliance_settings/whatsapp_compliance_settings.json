@@ -22,7 +22,6 @@
   "24_hour_window_section",
   "enforce_24_hour_window",
   "window_hours",
-  "allow_reply_outside_window",
   "privacy_and_compliance_section",
   "privacy_policy_url",
   "terms_of_service_url",
@@ -142,13 +141,6 @@
    "label": "Conversation Window (Hours)"
   },
   {
-   "default": "0",
-   "description": "Allow replies even outside window",
-   "fieldname": "allow_reply_outside_window",
-   "fieldtype": "Check",
-   "label": "Allow Reply Outside Window"
-  },
-  {
    "fieldname": "privacy_and_compliance_section",
    "fieldtype": "Section Break",
    "label": "Privacy & Compliance"
@@ -184,7 +176,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-02-06 11:41:59.218389",
+ "modified": "2026-02-06 16:38:17.283551",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Compliance Settings",

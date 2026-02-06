@@ -14,7 +14,6 @@ class WhatsAppComplianceSettings(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		allow_reply_outside_window: DF.Check
 		allow_transactional_without_consent: DF.Check
 		consent_check_mode: DF.Literal["Strict", "Warning Only", "Disabled"]
 		default_unsubscribe_text: DF.SmallText | None

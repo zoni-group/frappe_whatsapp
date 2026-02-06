@@ -163,8 +163,6 @@ class WhatsAppMessage(Document):
 
     def _check_conversation_window(self):
         """Enforce 24-hour window for non-template messages."""
-        from frappe_whatsapp.utils.consent import get_compliance_settings
-
         within, reason = is_within_conversation_window(
             str(self.to or ""),
             whatsapp_account=self.whatsapp_account,
@@ -173,16 +171,14 @@ class WhatsAppMessage(Document):
         self.within_conversation_window = 1 if within else 0
 
         if not within:
-            settings = get_compliance_settings()
-            if not settings.allow_reply_outside_window:
-                frappe.throw(
-                    _(
-                        "Cannot send free-form message outside"
-                        " the conversation window. Use an approved"
-                        " template instead. {0}"
-                    ).format(reason),
-                    title=_("Outside Conversation Window"),
-                )
+            frappe.throw(
+                _(
+                    "Cannot send free-form message outside"
+                    " the conversation window. Use an approved"
+                    " template instead. {0}"
+                ).format(reason),
+                title=_("Outside Conversation Window"),
+            )
 
     """Record last sender app"""
     def after_insert(self):
