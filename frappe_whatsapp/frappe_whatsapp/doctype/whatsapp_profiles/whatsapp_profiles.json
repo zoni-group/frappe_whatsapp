@@ -28,6 +28,8 @@
   "do_not_contact_section",
   "do_not_contact",
   "do_not_contact_reason",
+  "category_consents_section",
+  "category_consents",
   "compliance_metadata_section",
   "consent_version",
   "gdpr_consent",
@@ -194,12 +196,24 @@
   {
    "fieldname": "section_break_grzi",
    "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "category_consents_section",
+   "fieldtype": "Section Break",
+   "label": "Category Consents"
+  },
+  {
+   "description": "Per-category consent tracking",
+   "fieldname": "category_consents",
+   "fieldtype": "Table",
+   "label": "Category Consents",
+   "options": "WhatsApp Profile Consent"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-02-06 14:03:56.159207",
+ "modified": "2026-02-06 16:46:58.115766",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Profiles",

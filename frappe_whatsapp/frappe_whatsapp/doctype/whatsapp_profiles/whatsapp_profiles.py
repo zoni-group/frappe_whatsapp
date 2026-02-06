@@ -13,7 +13,9 @@ class WhatsAppProfiles(Document):
 
     if TYPE_CHECKING:
         from frappe.types import DF
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_profile_consent.whatsapp_profile_consent import WhatsAppProfileConsent
 
+        category_consents: DF.Table[WhatsAppProfileConsent]
         consent_ip_address: DF.Data | None
         consent_status: DF.Literal["Unknown", "Opted In", "Opted Out", "Partial"]
         consent_version: DF.Data | None
