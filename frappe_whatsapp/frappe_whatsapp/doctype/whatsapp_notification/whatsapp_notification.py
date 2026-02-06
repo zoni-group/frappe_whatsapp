@@ -284,7 +284,12 @@ class WhatsAppNotification(Document):
     def send_simple_template(self, template):
         """ send simple template without a doc to get field data """
         for contact in self._contact_list:
-            enforce_template_send_rules(template, to_number=contact)
+            try:
+                enforce_template_send_rules(template, to_number=contact)
+            except Exception as exc:
+                frappe.logger().info(
+                    f"Skipping {contact}: {str(exc)}")
+                continue
             # Consent check: skip recipients who haven't consented
             if self.check_consent_before_send:
                 result = verify_consent_for_send(
