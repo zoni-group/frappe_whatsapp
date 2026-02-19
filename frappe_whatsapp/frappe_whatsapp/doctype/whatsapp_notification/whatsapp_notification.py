@@ -296,6 +296,9 @@ class WhatsAppNotification(Document):
                     str(contact),
                     consent_category=self.required_consent_category,
                     is_transactional=bool(self.is_transactional),
+                    is_consent_request=bool(
+                        getattr(template, "is_consent_request", 0)
+                    ),
                 )
                 if not result.allowed:
                     frappe.logger().info(
@@ -354,6 +357,9 @@ class WhatsAppNotification(Document):
                     str(phone_number),
                     consent_category=self.required_consent_category,
                     is_transactional=bool(self.is_transactional),
+                    is_consent_request=bool(
+                        getattr(template, "is_consent_request", 0)
+                    ),
                 )
                 if not result.allowed:
                     frappe.logger().info(

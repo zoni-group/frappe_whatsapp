@@ -114,6 +114,15 @@ class BulkWhatsAppMessage(Document):
     def create_single_message(self, recipient):
         """Create a single message in the queue"""
         mobile = recipient.get("mobile_number")
+        is_consent_request = False
+        if self.use_template and self.template:
+            is_consent_request = bool(
+                frappe.db.get_value(
+                    "WhatsApp Templates",
+                    self.template,
+                    "is_consent_request",
+                )
+            )
 
         # Consent check: skip recipients who haven't consented
         if self.skip_opted_out and mobile:
@@ -121,6 +130,7 @@ class BulkWhatsAppMessage(Document):
                 str(mobile),
                 consent_category=self.required_consent_category,
                 is_transactional=False,
+                is_consent_request=is_consent_request,
             )
             if not result.allowed:
                 self.db_set(

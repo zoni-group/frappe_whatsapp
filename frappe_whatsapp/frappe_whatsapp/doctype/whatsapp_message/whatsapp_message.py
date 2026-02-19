@@ -142,20 +142,35 @@ class WhatsAppMessage(Document):
         # Determine if this template is transactional
         is_transactional = False
         consent_category: str | None = None
+        is_consent_request = bool(self.is_opt_in_request)
         if self.template:
             tmpl_data: dict[str, Any] | None = frappe.db.get_value(
                 "WhatsApp Templates", self.template,
-                fieldname={"is_transactional", "required_consent_category"},
+                fieldname={
+                    "is_transactional",
+                    "required_consent_category",
+                    "is_consent_request",
+                },
                 as_dict=True,
             )
             if isinstance(tmpl_data, dict):
                 is_transactional = bool(tmpl_data.get("is_transactional"))
                 consent_category = tmpl_data.get("required_consent_category")
+                is_consent_request = bool(
+                    tmpl_data.get("is_consent_request")
+                ) or is_consent_request
+
+        if is_consent_request:
+            # Consent request templates should not depend on prior category
+            # consent and should be traceable on the message record.
+            consent_category = None
+            self.is_opt_in_request = 1
 
         result = verify_consent_for_send(
             str(self.to or ""),
             consent_category=consent_category,
             is_transactional=is_transactional,
+            is_consent_request=is_consent_request,
         )
 
         # Record consent status on the message
