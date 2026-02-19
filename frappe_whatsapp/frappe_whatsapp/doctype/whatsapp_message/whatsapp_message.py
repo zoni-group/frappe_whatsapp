@@ -215,7 +215,6 @@ class WhatsAppMessage(Document):
     """Send whats app messages."""
     def before_insert(self):
         """Send message."""
-        print(f"Preparing to send WhatsApp Message: {self.as_dict()}")
         self.set_whatsapp_account()
 
         if self.use_template and self.template:
@@ -566,15 +565,16 @@ class WhatsAppMessage(Document):
             "authorization": f"Bearer {token}",
             "content-type": "application/json",
         }
+        request_url = (
+            f"{whatsapp_account.url}/{whatsapp_account.version}"
+            f"/{whatsapp_account.phone_id}/messages"
+        )
         try:
-            print(f"[WhatsApp Send] Payload: {json.dumps(data, indent=2)}")
             response = make_post_request(
-                (f"{whatsapp_account.url}/{whatsapp_account.version}"
-                 f"/{whatsapp_account.phone_id}/messages"),
+                request_url,
                 headers=headers,
                 data=json.dumps(data),
             )
-            print(f"[WhatsApp Send] Response: {response}")
 
             response_dict: dict[str, Any] = {}
             if response is None:
@@ -598,11 +598,30 @@ class WhatsAppMessage(Document):
                     if isinstance(message_id, str) and message_id:
                         self.message_id = message_id
 
-        except Exception:
+        except Exception as e:
             integration_json = _get_integration_request_json()
             res = integration_json.get("error", {}) if isinstance(
                 integration_json, dict) else {}
             error_message = res.get("Error", res.get("message"))
+
+            response_obj = getattr(e, "response", None)
+            status_code = getattr(response_obj, "status_code", None)
+            response_text = getattr(response_obj, "text", None)
+
+            if not integration_json and (
+                    status_code is not None or response_text):
+                integration_json = {
+                    "error": {
+                        "message": str(e),
+                        "status_code": status_code,
+                        "response_text": response_text,
+                        "request_url": request_url,
+                    }
+                }
+
+            detailed_error = error_message or str(e)
+            if status_code is not None:
+                detailed_error = f"{detailed_error} (HTTP {status_code})"
             frappe.get_doc(
                 {
                     "doctype": "WhatsApp Notification Log",
@@ -612,7 +631,7 @@ class WhatsAppMessage(Document):
             ).insert(ignore_permissions=True)
 
             frappe.throw(
-                msg=error_message or _("Failed to send WhatsApp message"),
+                msg=detailed_error or _("Failed to send WhatsApp message"),
                 title=res.get("error_user_title", "Error"))
 
     def format_number(self, number):

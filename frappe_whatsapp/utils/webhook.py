@@ -486,7 +486,6 @@ def _extract_status_error_fields(
 
 def update_message_status(data):
     """Update message status."""
-    print(f"[Webhook] update_message_status called with: {data}")
     statuses = data.get("statuses")
     if not statuses or not isinstance(statuses, list):
         return
