@@ -40,6 +40,7 @@ class WhatsAppTemplates(Document):
         header_type: DF.Literal["", "TEXT", "DOCUMENT", "IMAGE"]
         id: DF.Data | None
         include_unsubscribe_instructions: DF.Check
+        is_consent_request: DF.Check
         is_transactional: DF.Check
         language: DF.Link
         language_code: DF.Data | None
@@ -58,9 +59,9 @@ class WhatsAppTemplates(Document):
     def validate(self):
         # printing self for easier debugging in case of errors during
         # validation
-        print("Validating WhatsApp Template:", self.as_dict())
         self.set_whatsapp_account()
         self._apply_marketing_unsubscribe_rules()
+        self._apply_consent_request_rules()
 
         before = cast(
             WhatsAppTemplates,
@@ -114,6 +115,18 @@ class WhatsAppTemplates(Document):
             separator = "\n" if "\n" in footer else " "
             self.footer = f"{footer}{separator}{unsubscribe_text}"
             self.include_unsubscribe_instructions = 1
+
+    def _apply_consent_request_rules(self) -> None:
+        """Normalize consent-request templates so they can bootstrap opt-in.
+
+        A consent request must not itself require prior opt-in/category
+        consent, otherwise it can never be delivered in strict mode.
+        """
+        if not self.is_consent_request:
+            return
+
+        self.requires_opt_in = 0
+        self.required_consent_category = None
 
     def set_whatsapp_account(self):
         """Set whatsapp account to default if missing"""
@@ -532,9 +545,6 @@ def fetch() -> str:
         filters={"status": "Active"},
         fields=["name", "url", "version", "business_id"],
     )
-    print(
-        f"[Sync from Meta] Active WhatsApp Accounts found: "
-        f"{whatsapp_accounts}")
 
     for account in whatsapp_accounts:
         account_map = cast(Mapping[str, Any], account)
@@ -563,12 +573,10 @@ def fetch() -> str:
             )
 
             resp = _as_dict(raw)
-            print(f"Fetched templates for account {account_name}:", resp)
             templates = _as_list(resp.get("data"))
 
             for t in templates:
                 template = _as_dict(t)
-                print("Processing template:", template)
 
                 template_name = str(template.get("name") or "")
                 if not template_name:

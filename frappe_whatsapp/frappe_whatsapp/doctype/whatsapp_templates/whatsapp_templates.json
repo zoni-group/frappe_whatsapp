@@ -33,6 +33,7 @@
   "compliance_section",
   "required_consent_category",
   "requires_opt_in",
+  "is_consent_request",
   "include_unsubscribe_instructions",
   "unsubscribe_text",
   "is_transactional"
@@ -210,12 +211,19 @@
    "fieldname": "is_transactional",
    "fieldtype": "Check",
    "label": "Is Transactional"
+  },
+  {
+   "default": "0",
+   "description": "Mark this template as a consent request (can be sent before opt-in)",
+   "fieldname": "is_consent_request",
+   "fieldtype": "Check",
+   "label": "Is Consent Request"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-02-06 12:23:55.048706",
+ "modified": "2026-02-18 17:29:32.021989",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Templates",

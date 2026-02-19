@@ -110,6 +110,7 @@ def verify_consent_for_send(
         *,
         consent_category: str | None = None,
         is_transactional: bool = False,
+        is_consent_request: bool = False,
 ) -> ConsentResult:
     """Check whether we are allowed to send a message to *phone_number*.
 
@@ -118,7 +119,8 @@ def verify_consent_for_send(
     2. Whether the profile has do_not_contact set (always blocks).
     3. Whether the profile is opted out.
     4. Optionally, whether category-level consent exists.
-    5. Whether transactional messages bypass consent.
+    5. Whether this is a consent-request template.
+    6. Whether transactional messages bypass consent.
 
     Returns a ConsentResult with allowed=True/False and a status string
     suitable for storing in WhatsApp Message.consent_status_at_send.
@@ -145,6 +147,10 @@ def verify_consent_for_send(
 
     # No profile exists → treat as Unknown
     if not profile:
+        # Consent-request templates may be sent to collect opt-in.
+        if is_consent_request:
+            return ConsentResult(
+                True, "Bypassed", "Consent request template")
         # Transactional bypass
         if is_transactional and settings.allow_transactional_without_consent:
             return ConsentResult(True, "Bypassed", "Transactional bypass")
@@ -169,7 +175,7 @@ def verify_consent_for_send(
             False, "Opted Out", "Contact has opted out")
 
     # Category-level check (if a category is specified)
-    if consent_category and profile.name:
+    if consent_category and profile.name and not is_consent_request:
         cat_consent = frappe.db.get_value(
             "WhatsApp Profile Consent",
             {"parent": profile.name, "consent_category": consent_category},
@@ -184,6 +190,12 @@ def verify_consent_for_send(
     # Explicitly opted in
     if profile.is_opted_in:
         return ConsentResult(True, "Opted In", "")
+
+    # Consent-request templates may be sent to contacts with unknown status
+    # (but never to opted-out / DNC contacts).
+    if is_consent_request:
+        return ConsentResult(
+            True, "Bypassed", "Consent request template")
 
     # Profile exists but consent status is Unknown/Partial
     if is_transactional and settings.allow_transactional_without_consent:
@@ -629,6 +641,9 @@ def enforce_template_send_rules(
                 getattr(template, "status", "") or "Unknown"
             )
         )
+
+    if bool(getattr(template, "is_consent_request", 0)):
+        return
 
     requires_opt_in = bool(getattr(template, "requires_opt_in", 0))
     if not requires_opt_in:
