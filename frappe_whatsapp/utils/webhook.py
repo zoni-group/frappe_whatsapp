@@ -245,8 +245,6 @@ def _process_incoming_message(
             profile_name=sender_profile_name,
         )
 
-        forward_incoming_to_app_async(incoming_message_name=str(msg_doc.name))
-
         media_id = (message.get(message_type) or {}).get("id")
         if media_id:
             frappe.enqueue(
@@ -526,48 +524,57 @@ def update_message_status(data):
 def download_and_attach_media(
         whatsapp_account_name: str,
         message_docname: str, media_id: str, message_type: str):
-    from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import WhatsAppAccount  # noqa
-    whatsapp_account = cast(
-        WhatsAppAccount,
-        frappe.get_doc("WhatsApp Account", whatsapp_account_name))
-    token = whatsapp_account.get_password("token")
-    base_url = f"{whatsapp_account.url}/{whatsapp_account.version}/"
+    try:
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import WhatsAppAccount  # noqa
+        whatsapp_account = cast(
+            WhatsAppAccount,
+            frappe.get_doc("WhatsApp Account", whatsapp_account_name))
+        token = whatsapp_account.get_password("token")
+        base_url = f"{whatsapp_account.url}/{whatsapp_account.version}/"
 
-    headers = {"Authorization": f"Bearer {token}"}
+        headers = {"Authorization": f"Bearer {token}"}
 
-    # 1) Get media metadata to retrieve url/mime
-    r = requests.get(f"{base_url}{media_id}/", headers=headers, timeout=30)
-    r.raise_for_status()
-    media_data = r.json()
+        # 1) Get media metadata to retrieve url/mime
+        r = requests.get(f"{base_url}{media_id}/", headers=headers, timeout=30)
+        r.raise_for_status()
+        media_data = r.json()
 
-    media_url = media_data.get("url")
-    mime_type = media_data.get("mime_type") or "application/octet-stream"
-    file_extension = (mime_type.split("/")[-1] or "bin")
+        media_url = media_data.get("url")
+        mime_type = media_data.get("mime_type") or "application/octet-stream"
+        file_extension = (mime_type.split("/")[-1] or "bin")
 
-    # 2) Download content
-    r2 = requests.get(media_url, headers=headers, timeout=60)
-    r2.raise_for_status()
+        # 2) Download content
+        r2 = requests.get(media_url, headers=headers, timeout=60)
+        r2.raise_for_status()
 
-    file_data = r2.content
-    file_name = f"{frappe.generate_hash(length=10)}.{file_extension}"
+        file_data = r2.content
+        file_name = f"{frappe.generate_hash(length=10)}.{file_extension}"
 
-    # 3) Attach to WhatsApp Message
-    from frappe.core.doctype.file.file import File
-    file_doc = cast(File, frappe.get_doc({
-        "doctype": "File",
-        "file_name": file_name,
-        "attached_to_doctype": "WhatsApp Message",
-        "attached_to_name": message_docname,
-        "attached_to_field": "attach",
-        "content": file_data,
-    }))
-    file_doc.save(ignore_permissions=True)
+        # 3) Attach to WhatsApp Message
+        from frappe.core.doctype.file.file import File
+        file_doc = cast(File, frappe.get_doc({
+            "doctype": "File",
+            "file_name": file_name,
+            "attached_to_doctype": "WhatsApp Message",
+            "attached_to_name": message_docname,
+            "attached_to_field": "attach",
+            "content": file_data,
+        }))
+        file_doc.save(ignore_permissions=True)
 
-    frappe.db.set_value(
-        "WhatsApp Message",
-        message_docname,
-        "attach",
-        file_doc.file_url)
+        frappe.db.set_value(
+            "WhatsApp Message",
+            message_docname,
+            "attach",
+            file_doc.file_url)
+        forward_incoming_to_app_async(incoming_message_name=message_docname)
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(
+            frappe.get_traceback(),
+            ("WhatsApp media download failed for "
+             f"{message_type} {message_docname}")
+        )
 
 
 def publish_flow_realtime(
