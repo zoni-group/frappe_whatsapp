@@ -26,6 +26,7 @@ class WhatsAppAccount(Document):
         url: DF.Data | None
         version: DF.Data | None
         webhook_verify_token: DF.Data | None
+        whatsapp_client_app: DF.Link | None
     # end: auto-generated types
 
     def on_update(self):
