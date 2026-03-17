@@ -33,40 +33,69 @@ class AttachmentFileData(TypedDict):
     is_private: bool | int
 
 
-def set_last_sender_app(
-        *, whatsapp_account: str, to_number: str, source_app: str,
-        message_name: str | None = None):
-    contact = format_number(to_number)
+def _get_route_doc_name(*, whatsapp_account: str, contact_number: str) -> str:
+    return f"{contact_number}-{whatsapp_account}"
+
+
+def _upsert_conversation_route(
+    *,
+    whatsapp_account: str,
+    contact_number: str,
+    source_app: str,
+    last_outgoing_message: str | None = None,
+    update_last_outgoing: bool = False,
+) -> None:
+    contact = format_number(contact_number)
     if not (whatsapp_account and contact and source_app):
         return
 
-    doc_name = contact + "-" + whatsapp_account
-
-    existing = frappe.db.exists(
-            dt=ROUTE_DOCTYPE,
-            dn=doc_name
-        )
-
-    values = {
+    doc_name = _get_route_doc_name(
+        whatsapp_account=whatsapp_account,
+        contact_number=contact,
+    )
+    values: dict[str, Any] = {
         "last_source_app": source_app,
-        "last_outgoing_message": message_name,
-        "last_outgoing_at": now_datetime(),
     }
+    if update_last_outgoing:
+        values["last_outgoing_message"] = last_outgoing_message
+        values["last_outgoing_at"] = now_datetime()
 
+    existing = frappe.db.exists(dt=ROUTE_DOCTYPE, dn=doc_name)
     if existing:
         frappe.db.set_value(
             ROUTE_DOCTYPE,
-            existing, values,
-            update_modified=False)
-    else:
-        doc = frappe.get_doc({
+            existing,
+            values,
+            update_modified=False,
+        )
+        return
+
+    doc = frappe.get_doc(
+        {
             "doctype": ROUTE_DOCTYPE,
             "name": doc_name,
             "whatsapp_account": whatsapp_account,
             "contact_number": contact,
-            **values
-        })
-        doc.insert(ignore_permissions=True)
+            **values,
+        }
+    )
+    doc.insert(ignore_permissions=True)
+
+
+def set_last_sender_app(
+    *,
+    whatsapp_account: str,
+    to_number: str,
+    source_app: str,
+    message_name: str | None = None,
+):
+    _upsert_conversation_route(
+        whatsapp_account=whatsapp_account,
+        contact_number=to_number,
+        source_app=source_app,
+        last_outgoing_message=message_name,
+        update_last_outgoing=True,
+    )
 
 
 def get_last_sender_app(
@@ -76,7 +105,10 @@ def get_last_sender_app(
     if not (whatsapp_account and contact):
         return
 
-    doc_name = contact + "-" + whatsapp_account
+    doc_name = _get_route_doc_name(
+        whatsapp_account=whatsapp_account,
+        contact_number=contact,
+    )
 
     last_app = frappe.db.get_value(
         ROUTE_DOCTYPE,
@@ -86,6 +118,34 @@ def get_last_sender_app(
     if not last_app:
         return None
     return str(last_app)
+
+
+def resolve_incoming_routed_app(
+    *,
+    whatsapp_account: str,
+    contact_number: str,
+) -> str | None:
+    last_app = get_last_sender_app(
+        whatsapp_account=whatsapp_account,
+        contact_number=contact_number,
+    )
+    if last_app:
+        return last_app
+
+    default_app = frappe.db.get_value(
+        "WhatsApp Account",
+        whatsapp_account,
+        "whatsapp_client_app",
+    )
+    if not default_app:
+        return None
+
+    _upsert_conversation_route(
+        whatsapp_account=whatsapp_account,
+        contact_number=contact_number,
+        source_app=str(default_app),
+    )
+    return str(default_app)
 
 
 def _get_forwarded_message_cache_key(message_name: str) -> str:
@@ -235,10 +295,9 @@ def serialize_incoming_message_for_forwarding(
     *,
     incoming_message_doc: WhatsAppMessage,
 ) -> dict[str, Any]:
-    if getattr(incoming_message_doc, "name", None) and hasattr(
-        incoming_message_doc, "reload"
-    ):
-        incoming_message_doc.reload()
+    reload_method = getattr(incoming_message_doc, "reload", None)
+    if getattr(incoming_message_doc, "name", None) and callable(reload_method):
+        reload_method()
 
     attach = _get_attach_value(incoming_message_doc=incoming_message_doc)
     attachment_file = _get_attachment_file(
@@ -253,6 +312,7 @@ def serialize_incoming_message_for_forwarding(
         "name": incoming_message_doc.name,
         "from": incoming_message_doc.get("from"),
         "to": incoming_message_doc.to,
+        "profile_name": incoming_message_doc.get("profile_name"),
         "whatsapp_account": incoming_message_doc.whatsapp_account,
         "content_type": incoming_message_doc.content_type,
         "message": incoming_message_doc.message,
@@ -274,6 +334,13 @@ def serialize_incoming_message_for_forwarding(
 
 def forward_incoming_to_app(*, incoming_message_doc):
     routed_app = incoming_message_doc.get("routed_app")
+    if not routed_app:
+        routed_app = resolve_incoming_routed_app(
+            whatsapp_account=str(
+                incoming_message_doc.get("whatsapp_account") or ""
+            ),
+            contact_number=str(incoming_message_doc.get("from") or ""),
+        )
     if not routed_app:
         return
 

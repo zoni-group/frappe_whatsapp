@@ -6,7 +6,7 @@ from werkzeug.wrappers import Response
 from typing import cast, Any
 
 from frappe_whatsapp.utils import get_whatsapp_account
-from frappe_whatsapp.utils.routing import get_last_sender_app, \
+from frappe_whatsapp.utils.routing import resolve_incoming_routed_app, \
     forward_incoming_to_app_async
 from frappe_whatsapp.utils.consent import (
     check_opt_out_keyword,
@@ -156,7 +156,7 @@ def _process_incoming_message(
     contact_number = message.get("from")
     if not contact_number:
         return
-    last_app = get_last_sender_app(
+    routed_app = resolve_incoming_routed_app(
         whatsapp_account=str(whatsapp_account.name),
         contact_number=contact_number
     )
@@ -195,7 +195,7 @@ def _process_incoming_message(
             "content_type": "text",
             "profile_name": sender_profile_name,
             "whatsapp_account": whatsapp_account.name,
-            "routed_app": last_app,
+            "routed_app": routed_app,
         }).insert(ignore_permissions=True)
 
         # Check for opt-out / opt-in keywords
@@ -214,7 +214,7 @@ def _process_incoming_message(
             message=message,
             whatsapp_account=whatsapp_account,
             sender_profile_name=sender_profile_name,
-            last_app=last_app,
+            routed_app=routed_app,
             reply_to_message_id=reply_to_message_id,
             is_reply=is_reply
         )
@@ -233,7 +233,7 @@ def _process_incoming_message(
             "content_type": message_type,
             "profile_name": sender_profile_name,
             "whatsapp_account": whatsapp_account.name,
-            "routed_app": last_app,
+            "routed_app": routed_app,
         }).insert(ignore_permissions=True)
 
         # Check for opt-out / opt-in keywords in caption (if any)
@@ -276,7 +276,7 @@ def _process_incoming_message(
             "content_type": message_type or "unknown",
             "profile_name": sender_profile_name,
             "whatsapp_account": whatsapp_account.name,
-            "routed_app": last_app,
+            "routed_app": routed_app,
         }).insert(ignore_permissions=True)
 
         # Check for opt-out / opt-in keywords if message contains text-like
@@ -331,7 +331,7 @@ def _handle_consent_keywords(
 
 def _handle_interactive(
         *, message, whatsapp_account, sender_profile_name,
-        last_app, reply_to_message_id, is_reply):
+        routed_app, reply_to_message_id, is_reply):
     interactive = message.get("interactive") or {}
     interactive_type = interactive.get("type")
 
@@ -352,7 +352,7 @@ def _handle_interactive(
             "content_type": "button",
             "profile_name": sender_profile_name,
             "whatsapp_account": whatsapp_account.name,
-            "routed_app": last_app,
+            "routed_app": routed_app,
         }).insert(ignore_permissions=True)
 
         # Check for opt-out / opt-in keywords based on reply text/id
@@ -391,7 +391,7 @@ def _handle_interactive(
             "flow_response": json.dumps(flow_response),
             "profile_name": sender_profile_name,
             "whatsapp_account": whatsapp_account.name,
-            "routed_app": last_app,
+            "routed_app": routed_app,
         }).insert(ignore_permissions=True)
 
         # publish realtime async too (optional)
