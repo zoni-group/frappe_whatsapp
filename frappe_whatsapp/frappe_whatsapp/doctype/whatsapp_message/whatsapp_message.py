@@ -12,9 +12,10 @@ from frappe_whatsapp.utils.routing import set_last_sender_app
 from frappe_whatsapp.utils import get_whatsapp_account, format_number
 from frappe_whatsapp.utils.consent import (
     verify_consent_for_send,
-    is_within_conversation_window,
+    get_service_window_status,
     enforce_marketing_template_compliance,
     enforce_template_send_rules,
+    get_compliance_settings,
 )
 
 
@@ -137,28 +138,35 @@ class WhatsAppMessage(Document):
             else:
                 self.whatsapp_account = default_whatsapp_account.name
 
-    def _check_consent(self):
+    def _check_consent(self, *, service_window_active: bool = False):
         """Verify consent before sending an outgoing message."""
         # Determine if this template is transactional
         is_transactional = False
         consent_category: str | None = None
         is_consent_request = bool(self.is_opt_in_request)
         if self.template:
-            tmpl_data: dict[str, Any] | None = frappe.db.get_value(
-                "WhatsApp Templates", self.template,
-                fieldname={
+            is_transactional = bool(
+                frappe.db.get_value(
+                    "WhatsApp Templates",
+                    self.template,
                     "is_transactional",
-                    "required_consent_category",
-                    "is_consent_request",
-                },
-                as_dict=True,
+                )
             )
-            if isinstance(tmpl_data, dict):
-                is_transactional = bool(tmpl_data.get("is_transactional"))
-                consent_category = tmpl_data.get("required_consent_category")
-                is_consent_request = bool(
-                    tmpl_data.get("is_consent_request")
-                ) or is_consent_request
+            consent_category = cast(
+                str | None,
+                frappe.db.get_value(
+                    "WhatsApp Templates",
+                    self.template,
+                    "required_consent_category",
+                ),
+            )
+            is_consent_request = bool(
+                frappe.db.get_value(
+                    "WhatsApp Templates",
+                    self.template,
+                    "is_consent_request",
+                )
+            ) or is_consent_request
 
         if is_consent_request:
             # Consent request templates should not depend on prior category
@@ -171,6 +179,7 @@ class WhatsAppMessage(Document):
             consent_category=consent_category,
             is_transactional=is_transactional,
             is_consent_request=is_consent_request,
+            service_window_active=service_window_active,
         )
 
         # Record consent status on the message
@@ -182,24 +191,10 @@ class WhatsAppMessage(Document):
                 _("Cannot send message: {0}").format(result.reason),
                 title=_("Consent Required"))
 
-    def _check_conversation_window(self):
-        """Enforce 24-hour window for non-template messages."""
-        within, reason = is_within_conversation_window(
-            str(self.to or ""),
-            whatsapp_account=self.whatsapp_account,
-        )
-
-        self.within_conversation_window = 1 if within else 0
-
-        if not within:
-            frappe.throw(
-                _(
-                    "Cannot send free-form message outside"
-                    " the conversation window. Use an approved"
-                    " template instead. {0}"
-                ).format(reason),
-                title=_("Outside Conversation Window"),
-            )
+        # Record bypass reason when consent was permitted via a bypass
+        # (service window, transactional, consent-request, etc.)
+        if result.status == "Bypassed" and result.reason:
+            self.consent_bypass_reason = result.reason
 
     """Record last sender app"""
     def after_insert(self):
@@ -224,11 +219,34 @@ class WhatsAppMessage(Document):
         # Docs created with message_id already set (e.g. from
         # notification.notify()) are log records of already-sent messages.
         if self.type == "Outgoing" and self.to and not self.message_id:
-            self._check_consent()
+            # ── Step 1: actual service window (for consent bypass) ──────
+            # get_service_window_status always queries the DB and ignores
+            # the enforce_24_hour_window toggle.  An active window means
+            # the contact sent us a message recently; we may reply even
+            # without a recorded opt-in.  Disabling enforcement must NOT
+            # fabricate a phantom service window.
+            service_window_active, window_reason = get_service_window_status(
+                str(self.to or ""), whatsapp_account=self.whatsapp_account)
+            self.within_conversation_window = 1 if service_window_active else 0
 
-            # 24-hour window: non-template messages need recent incoming
-            if self.message_type != "Template":
-                self._check_conversation_window()
+            # ── Step 2: consent check (may be bypassed by service window) ─
+            self._check_consent(service_window_active=service_window_active)
+
+            # ── Step 3: enforcement for free-form messages ─────────────
+            # The service window bypass relaxes consent only; the window
+            # enforcement rule for non-template messages is separate and
+            # respects the enforce_24_hour_window toggle.
+            if self.message_type != "Template" and not service_window_active:
+                compliance = get_compliance_settings()
+                if compliance.enforce_24_hour_window:
+                    frappe.throw(
+                        _(
+                            "Cannot send free-form message outside"
+                            " the conversation window. Use an approved"
+                            " template instead. {0}"
+                        ).format(window_reason),
+                        title=_("Outside Conversation Window"),
+                    )
 
         if self.type == "Outgoing" and self.message_type != "Template":
             if self.attach and not self.attach.startswith("http"):
@@ -414,7 +432,11 @@ class WhatsAppMessage(Document):
             frappe.get_doc("WhatsApp Templates", self.template)
         )
         enforce_marketing_template_compliance(template)
-        enforce_template_send_rules(template, to_number=str(self.to or ""))
+        enforce_template_send_rules(
+            template,
+            to_number=str(self.to or ""),
+            service_window_active=bool(self.within_conversation_window),
+        )
         data: dict[str, Any] = {
             "messaging_product": "whatsapp",
             "to": format_number(self.to),

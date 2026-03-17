@@ -18,6 +18,11 @@ from frappe_whatsapp.utils.consent import (
     verify_consent_for_send,
     enforce_marketing_template_compliance,
     enforce_template_send_rules,
+    # NOTE: service-window bypass (get_service_window_status) is intentionally
+    # NOT used here.  WhatsAppNotification sends are system-originated
+    # (scheduler / doc-event) messages, not replies to a user-initiated
+    # conversation.  The 24-hour service-window consent bypass applies only
+    # to the WhatsAppMessage outbound-reply path.
 )
 from typing import Any, cast, TypedDict, Optional
 

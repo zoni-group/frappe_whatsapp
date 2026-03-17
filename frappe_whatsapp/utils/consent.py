@@ -111,6 +111,7 @@ def verify_consent_for_send(
         consent_category: str | None = None,
         is_transactional: bool = False,
         is_consent_request: bool = False,
+        service_window_active: bool = False,
 ) -> ConsentResult:
     """Check whether we are allowed to send a message to *phone_number*.
 
@@ -121,6 +122,8 @@ def verify_consent_for_send(
     4. Optionally, whether category-level consent exists.
     5. Whether this is a consent-request template.
     6. Whether transactional messages bypass consent.
+    7. Whether an active 24-hour service window permits a bypass
+       (unknown/no-profile only; DNC and explicit opt-out always block).
 
     Returns a ConsentResult with allowed=True/False and a status string
     suitable for storing in WhatsApp Message.consent_status_at_send.
@@ -156,6 +159,11 @@ def verify_consent_for_send(
             return ConsentResult(True, "Bypassed", "Transactional bypass")
         if settings.consent_check_mode == "Warning Only":
             return ConsentResult(True, "Unknown", "No profile found")
+        # Active service window: user initiated the conversation; allow reply
+        # even without a recorded opt-in.
+        if service_window_active:
+            return ConsentResult(
+                True, "Bypassed", "Service window bypass (no profile)")
         return ConsentResult(
             False, "Unknown", "No consent profile found for this number")
 
@@ -176,13 +184,12 @@ def verify_consent_for_send(
 
     # Category-level check (if a category is specified)
     if consent_category and profile.name and not is_consent_request:
-        cat_consent = frappe.db.get_value(
+        cat_consented = frappe.db.get_value(
             "WhatsApp Profile Consent",
             {"parent": profile.name, "consent_category": consent_category},
-            ["consented"],
-            as_dict=True,
+            "consented",
         )
-        if cat_consent and not cat_consent.consented:
+        if cat_consented is not None and not cat_consented:
             return ConsentResult(
                 False, "Opted Out",
                 f"Contact opted out of category: {consent_category}")
@@ -204,6 +211,12 @@ def verify_consent_for_send(
     if settings.consent_check_mode == "Warning Only":
         return ConsentResult(True, "Unknown", "Consent not confirmed")
 
+    # Active service window: user initiated; reply allowed without opt-in.
+    # DNC and explicit opt-out already returned above so this is safe.
+    if service_window_active:
+        return ConsentResult(
+            True, "Bypassed", "Service window bypass")
+
     # Strict mode: no explicit opt-in → block
     return ConsentResult(
         False, "Unknown", "Contact has not opted in")
@@ -211,29 +224,26 @@ def verify_consent_for_send(
 
 # ── 24-hour conversation window ──────────────────────────────────────
 
-def is_within_conversation_window(
+def _check_actual_service_window(
         phone_number: str,
         whatsapp_account: str | None = None,
 ) -> tuple[bool, str]:
-    """Check if there's an active conversation window with the contact.
+    """Query whether there is a real inbound message within the window.
 
-    WhatsApp requires that free-form (non-template) messages can only be
-    sent within 24 hours of the last incoming message from the contact.
+    This helper always hits the database.  It does NOT respect the
+    ``enforce_24_hour_window`` toggle — that toggle is purely about
+    *enforcement* (whether to block free-form messages outside the window),
+    not about whether an actual service window exists for consent purposes.
 
     Returns (is_within_window, reason).
     """
-    settings = get_compliance_settings()
-
-    if not settings.enforce_24_hour_window:
-        return True, "24-hour window enforcement disabled"
-
     number = format_number(phone_number)
     if not number:
         return False, "No phone number"
 
+    settings = get_compliance_settings()
     window_hours = int(settings.window_hours or 24)
 
-    # Find the most recent incoming message from this contact
     filters: dict[str, Any] = {
         "type": "Incoming",
         "from": number,
@@ -263,6 +273,52 @@ def is_within_conversation_window(
         f"Last incoming message was {hours_since:.1f}h ago"
         f" (window: {window_hours}h)",
     )
+
+
+def get_service_window_status(
+        phone_number: str,
+        whatsapp_account: str | None = None,
+) -> tuple[bool, str]:
+    """Return whether an active user-initiated service window exists.
+
+    An active service window means the contact sent an inbound message
+    within the last ``window_hours`` hours (default 24).  This is used
+    as the signal for the consent bypass: when the user initiated the
+    conversation we may reply even without a recorded opt-in.
+
+    Unlike ``is_within_conversation_window``, this function **ignores**
+    the ``enforce_24_hour_window`` toggle.  That toggle controls whether
+    *free-form message sending is blocked* outside the window; it has no
+    bearing on whether a real service window exists for consent purposes.
+    Disabling enforcement must not fabricate a phantom service window.
+
+    Returns (service_window_active, reason).
+    """
+    return _check_actual_service_window(phone_number, whatsapp_account)
+
+
+def is_within_conversation_window(
+        phone_number: str,
+        whatsapp_account: str | None = None,
+) -> tuple[bool, str]:
+    """Check the enforcement-aware 24-hour conversation window.
+
+    WhatsApp requires that free-form (non-template) messages can only be
+    sent within 24 hours of the last incoming message from the contact.
+
+    When ``enforce_24_hour_window`` is disabled in Compliance Settings,
+    this returns ``True`` without a DB query (enforcement is suppressed).
+    For the consent-bypass signal, use ``get_service_window_status``
+    instead — it always checks for a real inbound message.
+
+    Returns (is_within_window, reason).
+    """
+    settings = get_compliance_settings()
+
+    if not settings.enforce_24_hour_window:
+        return True, "24-hour window enforcement disabled"
+
+    return _check_actual_service_window(phone_number, whatsapp_account)
 
 
 # ── Profile updates ──────────────────────────────────────────────────
@@ -569,7 +625,8 @@ def _send_template_confirmation(
     except Exception:
         frappe.log_error(
             frappe.get_traceback(),
-            _("Failed to send opt-out confirmation template to {0}").format(to))
+            _("Failed to send opt-out confirmation template"
+              " to {0}").format(to))
 
 
 # ── Audit log ────────────────────────────────────────────────────────
@@ -629,7 +686,10 @@ def enforce_marketing_template_compliance(template) -> None:
 
 
 def enforce_template_send_rules(
-        template, *, to_number: str | None = None) -> None:
+        template, *,
+        to_number: str | None = None,
+        service_window_active: bool = False,
+) -> None:
     """Enforce template status + opt-in requirements before sending."""
     if not template:
         frappe.throw(_("Template is required to send a template message."))
@@ -662,6 +722,10 @@ def enforce_template_send_rules(
     )
 
     if not profile:
+        # Active service window allows sending requires_opt_in templates to
+        # contacts who have not yet built a profile (unknown consent).
+        if service_window_active:
+            return
         frappe.throw(
             _("Recipient has not opted in to receive this template."))
 
@@ -669,11 +733,15 @@ def enforce_template_send_rules(
         WhatsAppProfiles,
         frappe.get_doc("WhatsApp Profiles", profile[0].name))
 
+    # DNC and explicit opt-out always block, even within the service window.
     if profile.do_not_contact or profile.is_opted_out:
         frappe.throw(
             _("Recipient has opted out. Cannot send this template."))
 
     if not profile.is_opted_in:
+        # Active service window: allow sending to unknown-consent contacts.
+        if service_window_active:
+            return
         frappe.throw(
             _("Recipient has not explicitly opted in to receive this "
               "template."))
