@@ -76,7 +76,7 @@ def post():
         queue="short",
         data=data,
         enqueue_after_commit=True,
-        job_name="whatsapp_webhook_process"
+        job_id=f"whatsapp_webhook_process::{frappe.generate_hash(length=10)}"
     )
 
     # ✅ Return immediately
@@ -219,7 +219,7 @@ def _process_incoming_message(
             is_reply=is_reply
         )
 
-    elif message_type in ["image", "audio", "video", "document"]:
+    elif message_type in ["image", "audio", "video", "document", "sticker"]:
         # Insert a stub message quickly, then download media async
         caption_text = (message.get(message_type) or {}).get("caption", "")
         msg_doc = frappe.get_doc({

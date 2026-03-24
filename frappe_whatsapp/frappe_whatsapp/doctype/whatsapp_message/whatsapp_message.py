@@ -52,7 +52,7 @@ class WhatsAppMessage(Document):
         consent_bypass_reason: DF.Data | None
         consent_checked: DF.Check
         consent_status_at_send: DF.Literal["Opted In", "Opted Out", "Unknown", "Bypassed"]
-        content_type: DF.Literal["text", "document", "image", "video", "audio", "flow", "reaction", "location", "contact", "button", "interactive"]
+        content_type: DF.Literal["text", "document", "image", "sticker", "video", "audio", "flow", "reaction", "location", "contact", "button", "interactive"]
         conversation_id: DF.Data | None
         external_reference: DF.Data | None
         flow: DF.Link | None
@@ -266,6 +266,8 @@ class WhatsAppMessage(Document):
                     "link": link,
                     "caption": self.message,
                 }
+            elif self.content_type == "sticker":
+                data["sticker"] = {"link": link}
             elif self.content_type == "reaction":
                 data["reaction"] = {
                     "message_id": self.reply_to_message_id,

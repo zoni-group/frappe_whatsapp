@@ -203,3 +203,57 @@ class TestRouting(FrappeTestCase):
         mock_forward_async.assert_called_once_with(
             incoming_message_name=str(message_doc.name)
         )
+
+    @patch("frappe_whatsapp.utils.webhook._handle_consent_keywords")
+    @patch("frappe_whatsapp.utils.webhook.forward_incoming_to_app_async")
+    @patch("frappe_whatsapp.utils.webhook.frappe.enqueue")
+    def test_process_incoming_sticker_message_enqueues_media_download(
+        self,
+        mock_enqueue,
+        mock_forward_async,
+        _mock_handle_consent_keywords,
+    ):
+        frappe.reload_doc("frappe_whatsapp", "doctype", "whatsapp_message")
+        app = self._create_client_app()
+        account = self._create_account(whatsapp_client_app=app.name)
+        message_id = f"wamid.{frappe.generate_hash(length=8)}"
+        media_id = frappe.generate_hash(length=12)
+
+        _process_incoming_message(
+            message={
+                "id": message_id,
+                "from": "+15551234567",
+                "type": "sticker",
+                "sticker": {
+                    "id": media_id,
+                    "mime_type": "image/webp",
+                    "animated": False,
+                },
+            },
+            whatsapp_account=account,
+            sender_profile_name="Jane Sender",
+        )
+
+        doc_name = frappe.db.get_value(
+            "WhatsApp Message",
+            {"message_id": message_id},
+            "name",
+        )
+        self.assertTrue(doc_name)
+
+        message_doc = frappe.get_doc("WhatsApp Message", doc_name)
+        self.assertEqual(message_doc.content_type, "sticker")
+        self.assertEqual(message_doc.message, "")
+        self.assertEqual(message_doc.routed_app, app.name)
+        self.assertEqual(message_doc.profile_name, "Jane Sender")
+
+        mock_enqueue.assert_called_once_with(
+            "frappe_whatsapp.utils.webhook.download_and_attach_media",
+            queue="long",
+            whatsapp_account_name=account.name,
+            message_docname=message_doc.name,
+            media_id=media_id,
+            message_type="sticker",
+            enqueue_after_commit=True,
+        )
+        mock_forward_async.assert_not_called()
