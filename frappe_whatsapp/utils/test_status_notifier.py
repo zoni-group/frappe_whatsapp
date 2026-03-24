@@ -14,7 +14,7 @@ Strategy
 """
 import json
 from typing import TYPE_CHECKING, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
@@ -984,6 +984,46 @@ class TestRetryScheduler(FrappeTestCase):
 
 
 class TestEnsureStatusLogIndexes(FrappeTestCase):
+    @patch("frappe_whatsapp.utils.status_notifier.frappe.db.add_index")
+    @patch("frappe_whatsapp.utils.status_notifier.frappe.db.has_index")
+    def test_ensure_indexes_uses_db_helper_for_missing_indexes(
+        self,
+        mock_has_index,
+        mock_add_index,
+    ):
+        """Missing indexes are created via frappe.db.add_index()."""
+        from frappe_whatsapp.utils.status_notifier import (
+            ensure_status_log_indexes,
+        )
+
+        table = f"tab{STATUS_WEBHOOK_LOG_DOCTYPE}"
+        mock_has_index.side_effect = [False, False]
+
+        ensure_status_log_indexes()
+
+        self.assertEqual(
+            mock_has_index.call_args_list,
+            [
+                call(table, "idx_status_retry_scan"),
+                call(table, "idx_status_claim_scan"),
+            ],
+        )
+        self.assertEqual(
+            mock_add_index.call_args_list,
+            [
+                call(
+                    STATUS_WEBHOOK_LOG_DOCTYPE,
+                    ["delivery_status", "attempts", "next_retry_at"],
+                    index_name="idx_status_retry_scan",
+                ),
+                call(
+                    STATUS_WEBHOOK_LOG_DOCTYPE,
+                    ["delivery_status", "attempts", "claim_expires_at"],
+                    index_name="idx_status_claim_scan",
+                ),
+            ],
+        )
+
     def test_ensure_indexes_is_idempotent(self):
         """ensure_status_log_indexes() is a no-op when indexes exist, and
         both indexes have the correct column definitions."""

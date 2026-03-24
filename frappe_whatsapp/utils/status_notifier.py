@@ -607,7 +607,7 @@ def ensure_status_log_indexes() -> None:
 
     Called via the ``after_migrate`` hook so indexes are created (once)
     whenever ``bench migrate`` runs.  Safe to call repeatedly — per-index
-    SHOW INDEX guards make each step a no-op when already present.
+    existence checks make each step a no-op when already present.
 
     Two indexes are maintained:
 
@@ -621,26 +621,27 @@ def ensure_status_log_indexes() -> None:
         (delivery_status, attempts, claim_expires_at)
     """
     table = f"tab{STATUS_WEBHOOK_LOG_DOCTYPE}"
-    # ALTER TABLE is DDL — MySQL auto-commits it; no explicit commit needed.
-    if not frappe.db.sql(
-        f"SHOW INDEX FROM `{table}`"
-        " WHERE Key_name = 'idx_status_retry_scan'"
-    ):
-        frappe.db.sql(
-            f"ALTER TABLE `{table}`"
-            " ADD INDEX `idx_status_retry_scan`"
-            " (`delivery_status`, `attempts`, `next_retry_at`)"
-        )
+    indexes = (
+        (
+            "idx_status_retry_scan",
+            ["delivery_status", "attempts", "next_retry_at"],
+        ),
+        (
+            "idx_status_claim_scan",
+            ["delivery_status", "attempts", "claim_expires_at"],
+        ),
+    )
 
-    if not frappe.db.sql(
-        f"SHOW INDEX FROM `{table}`"
-        " WHERE Key_name = 'idx_status_claim_scan'"
-    ):
-        frappe.db.sql(
-            f"ALTER TABLE `{table}`"
-            " ADD INDEX `idx_status_claim_scan`"
-            " (`delivery_status`, `attempts`, `claim_expires_at`)"
-        )
+    for index_name, fields in indexes:
+        if not frappe.db.has_index(table, index_name):
+            # Use Frappe's helper so the DDL runs across a safe commit
+            # boundary during migrate instead of tripping the implicit
+            # commit guard on raw ALTER TABLE.
+            frappe.db.add_index(
+                STATUS_WEBHOOK_LOG_DOCTYPE,
+                fields,
+                index_name=index_name,
+            )
 
 
 # ── Frappe doc_events handlers ─────────────────────────────────────────────
