@@ -17,6 +17,7 @@ class WhatsAppAccount(Document):
         account_name: DF.Data | None
         allow_auto_read_receipt: DF.Check
         app_id: DF.Data | None
+        app_secret: DF.Password | None
         business_id: DF.Data | None
         is_default_incoming: DF.Check
         is_default_outgoing: DF.Check

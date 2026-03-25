@@ -1,7 +1,10 @@
 """Webhook."""
 import frappe
+import hashlib
+import hmac
 import json
 import requests
+from frappe.utils.password import get_decrypted_password as _get_decrypted_password
 from werkzeug.wrappers import Response
 from typing import cast, Any
 
@@ -45,19 +48,35 @@ def get():
 
 
 def post():
-    """POST: accept quickly, enqueue processing."""
-    # Keep it lightweight: get JSON / form_dict
-    data = frappe.local.form_dict
+    """POST: read raw body + signature header, then delegate to handler.
+
+    Keeping this function thin makes it straightforward to test the validation
+    and enqueue logic via ``_handle_post_body`` without needing a live request.
+    """
+    raw_body: bytes = frappe.request.get_data()
+    sig_header: str = frappe.request.headers.get("X-Hub-Signature-256", "")
+    return _handle_post_body(raw_body, sig_header)
+
+
+def _handle_post_body(raw_body: bytes, sig_header: str) -> Response:
+    """Validate signature and enqueue processing for a single webhook POST.
+
+    Validates ``X-Hub-Signature-256`` against the ``app_secret`` stored on
+    every active WhatsApp Account.  Rejects with HTTP 403 before logging or
+    enqueueing anything if validation fails.
+    """
+    if not _verify_webhook_signature(raw_body, sig_header):
+        return Response("Forbidden", status=403)
+
+    # Signature is valid — parse the JSON body (Meta always sends JSON).
+    data: dict = {}
     try:
-        # if it's a JSON body, form_dict can be empty; try request JSON too
-        if not data and hasattr(frappe.request, "get_json"):
-            data = frappe.request.get_json() or {}
+        if raw_body:
+            data = json.loads(raw_body)
     except Exception:
         pass
 
-    # Optional: store raw payload for troubleshooting (this is a DB write).
-    # If you want "fastest possible", log only on errors, or log via
-    # enqueue too.
+    # Store raw payload for troubleshooting (non-fatal DB write).
     try:
         frappe.get_doc({
             "doctype": "WhatsApp Notification Log",
@@ -65,12 +84,10 @@ def post():
             "meta_data": json.dumps(data)
         }).insert(ignore_permissions=True)
     except Exception:
-        # never block the webhook because logging failed
         frappe.log_error(
             frappe.get_traceback(),
             "WhatsApp webhook log insert failed")
 
-    # ✅ Enqueue heavy work
     frappe.enqueue(
         "frappe_whatsapp.utils.webhook.process_webhook_payload",
         queue="short",
@@ -79,8 +96,81 @@ def post():
         job_id=f"whatsapp_webhook_process::{frappe.generate_hash(length=10)}"
     )
 
-    # ✅ Return immediately
     return Response("ok", status=200)
+
+
+def _get_active_app_secrets() -> list[str]:
+    """Return unique plaintext app secrets from all active WhatsApp Accounts.
+
+    Uses ``_get_decrypted_password`` (module-level alias for
+    ``frappe.utils.password.get_decrypted_password``) so the values are never
+    stored in plain text.  Accounts with no ``app_secret`` configured are
+    silently skipped.  The module-level import also makes it straightforward
+    to patch in tests.
+    """
+    accounts = frappe.get_all(
+        "WhatsApp Account",
+        filters={"status": "Active"},
+        fields=["name"],
+    )
+
+    seen: set[str] = set()
+    secrets: list[str] = []
+    for account in accounts:
+        try:
+            secret = _get_decrypted_password(
+                "WhatsApp Account",
+                str(account.name),
+                "app_secret",
+                raise_exception=False,
+            )
+            if secret and secret not in seen:
+                seen.add(secret)
+                secrets.append(secret)
+        except Exception:
+            pass
+
+    return secrets
+
+
+def _verify_webhook_signature(raw_body: bytes, sig_header: str) -> bool:
+    """Return True when ``X-Hub-Signature-256`` matches a configured app secret.
+
+    Meta signs every webhook POST with ``HMAC-SHA256(app_secret, raw_body)``
+    and includes the result as ``X-Hub-Signature-256: sha256=<hex>``.
+    We validate against every active account's ``app_secret`` so deployments
+    with multiple Meta apps still work.
+
+    Returns False (and logs a warning) when no app secrets are configured,
+    prompting operators to add the secret to their WhatsApp Account record.
+    """
+    if not sig_header.startswith("sha256="):
+        return False
+
+    provided_hex = sig_header[len("sha256="):]
+    if not provided_hex:
+        return False
+
+    app_secrets = _get_active_app_secrets()
+    if not app_secrets:
+        frappe.log_error(
+            "No App Secret is configured on any active WhatsApp Account. "
+            "Add the Meta App Secret (App Settings → Basic) to the "
+            "WhatsApp Account form to enable webhook signature validation.",
+            "WhatsApp webhook: no app secrets configured",
+        )
+        return False
+
+    for secret in app_secrets:
+        expected_hex = hmac.new(
+            secret.encode("utf-8"),
+            raw_body,
+            hashlib.sha256,
+        ).hexdigest()
+        if hmac.compare_digest(expected_hex, provided_hex):
+            return True
+
+    return False
 
 
 def process_webhook_payload(data: dict):
@@ -92,31 +182,81 @@ def process_webhook_payload(data: dict):
         except Exception:
             data = {}
 
+    # Normalize entries to a list, supporting both payload shapes Meta sends:
+    #   list-shaped:  data["entry"] = [{"id": "...", "changes": [...]}, ...]
+    #   dict-shaped:  data["entry"] = {"id": "...", "changes": [...]}
+    # All subsequent code uses `entries` so both shapes are handled uniformly.
+    raw_entry = data.get("entry")
+    if isinstance(raw_entry, list):
+        entries = raw_entry
+    elif isinstance(raw_entry, dict):
+        entries = [raw_entry]
+    else:
+        entries = []
+
+    # Extract the first valid change together with its parent entry's WABA ID.
+    # Keeping them paired means the trust check and log message below both
+    # refer to the exact same entry — a trusted later entry cannot authorize
+    # an untrusted earlier one.
+    changes = None
+    entry_waba_id = ""
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        changes_list = entry.get("changes") or []
+        if isinstance(changes_list, list) and changes_list:
+            first_change = changes_list[0]
+        elif isinstance(changes_list, dict):
+            first_change = changes_list
+        else:
+            continue
+        if isinstance(first_change, dict):
+            changes = first_change
+            entry_waba_id = str(entry.get("id") or "")
+            break
+
+    # Template-related events (status, quality, category) do NOT carry a
+    # phone_number_id in their payload — Meta omits metadata entirely.
+    # Handle them here, before the account-resolution step, so they are
+    # never silently dropped by the whatsapp_account guard below.
+    #
+    # Security: validate the WABA ID of the *specific* entry being processed
+    # against configured local accounts.  See _is_trusted_waba_id() for
+    # details and the preferred upgrade path (X-Hub-Signature-256).
+    if changes and changes.get("field") in _TEMPLATE_WEBHOOK_FIELDS:
+        if _is_trusted_waba_id(entry_waba_id):
+            update_status(changes)
+        else:
+            frappe.log_error(
+                (
+                    f"Template webhook event ignored: entry WABA ID "
+                    f"'{entry_waba_id}' does not match any configured "
+                    "WhatsApp Account (business_id). Possible spoofed request."
+                ),
+                "WhatsApp untrusted template webhook",
+            )
+        return
+
     messages = []
     phone_id = None
 
     try:
-        messages = data["entry"][0]["changes"][0]["value"].get("messages", [])
+        messages = entries[0]["changes"][0]["value"].get("messages", []) or []
         phone_id = (
-            data.get("entry", [{}])[0]
-            .get("changes", [{}])[0]
+            entries[0]["changes"][0]
             .get("value", {})
             .get("metadata", {})
             .get("phone_number_id")
         )
     except Exception:
-        # fallback shapes
-        try:
-            messages = data["entry"]["changes"][0]["value"].get("messages", [])
-        except Exception:
-            messages = []
+        messages = []
 
     sender_profile_name = next(
         (
             contact.get("profile", {}).get("name")
-            for entry in data.get("entry", [])
-            for change in entry.get("changes", [])
-            for contact in change.get("value", {}).get("contacts", [])
+            for entry in entries
+            for change in (entry.get("changes") or [])
+            for contact in (change.get("value", {}).get("contacts") or [])
         ),
         None,
     )
@@ -136,16 +276,7 @@ def process_webhook_payload(data: dict):
                 sender_profile_name=sender_profile_name
             )
     else:
-        # status updates / template status updates
-        changes = None
-        try:
-            changes = data["entry"][0]["changes"][0]
-        except Exception:
-            try:
-                changes = data["entry"]["changes"][0]
-            except Exception:
-                changes = None
-
+        # Message delivery status updates (field == "messages")
         if changes:
             update_status(changes)
 
@@ -408,17 +539,82 @@ def _handle_interactive(
         forward_incoming_to_app_async(incoming_message_name=str(doc.name))
 
 
+# Template-related webhook fields that should trigger a full sync from Meta.
+#
+# Meta emits these field values on the `changes` object:
+#   message_template_status_update — APPROVED/REJECTED/PENDING after edits or
+#       review-cycle changes. This is also the signal for content edits: when
+#       an operator edits a template in Business Manager, Meta puts it into
+#       PENDING review and sends this event (there is no separate
+#       "content_changed" field).
+#   message_template_quality_update — quality-score changes (HIGH/MEDIUM/LOW).
+#   template_category_update — Meta reclassifies a template's category
+#       (e.g. UTILITY → MARKETING); the template record needs re-syncing.
+#
+# No additional template-change field is documented by Meta at this time.
+_TEMPLATE_WEBHOOK_FIELDS = frozenset({
+    "message_template_status_update",
+    "message_template_quality_update",
+    "template_category_update",
+})
+
+
+def _is_trusted_waba_id(waba_id: str) -> bool:
+    """Return True when the given WABA ID maps to a configured local account.
+
+    The caller must pass the ID of the *specific* entry whose change is being
+    processed (not any other entry in the payload), so that a trusted later
+    entry cannot authorize an untrusted earlier one.
+
+    Meta template webhook payloads carry the WhatsApp Business Account ID
+    (WABA ID) in ``entry[].id``.  We verify it against the ``business_id``
+    field of configured WhatsApp Accounts before allowing a template sync.
+
+    **Preferred approach (not yet implemented):** validate Meta's
+    ``X-Hub-Signature-256`` request header using an App Secret stored per
+    account.  That requires adding an ``app_secret`` Password field to the
+    WhatsApp Account doctype.  Until that field exists, this WABA-ownership
+    check is the current defensive fallback.
+    """
+    if not waba_id:
+        return False
+    return bool(frappe.db.exists("WhatsApp Account", {"business_id": waba_id}))
+
+
+def _enqueue_template_sync() -> None:
+    """Enqueue a background template sync from Meta.
+
+    Uses a stable job_id combined with deduplicate=True so a burst of
+    template webhook events results in at most one queued sync job.
+    Frappe passes deduplicate to RQ which skips enqueueing when a job
+    with the same id is already pending.
+    """
+    frappe.enqueue(
+        "frappe_whatsapp.frappe_whatsapp.doctype."
+        "whatsapp_templates.whatsapp_templates.fetch",
+        queue="long",
+        job_id="whatsapp_template_sync",
+        deduplicate=True,
+        enqueue_after_commit=True,
+    )
+
+
 def update_status(data):
     """Update status hook."""
     value = data.get("value")
     if not isinstance(value, dict):
         return
 
-    if data.get("field") == "message_template_status_update":
+    field = data.get("field")
+
+    if field == "message_template_status_update":
         update_template_status(value)
 
-    elif data.get("field") == "messages":
+    elif field == "messages":
         update_message_status(value)
+
+    if field in _TEMPLATE_WEBHOOK_FIELDS:
+        _enqueue_template_sync()
 
 
 def update_template_status(data):
