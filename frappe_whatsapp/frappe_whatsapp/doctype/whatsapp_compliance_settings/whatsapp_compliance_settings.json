@@ -26,7 +26,8 @@
   "privacy_policy_url",
   "terms_of_service_url",
   "default_unsubscribe_text",
-  "include_unsubscribe_in_marketing"
+  "include_unsubscribe_in_marketing",
+  "consent_request_template_prefixes"
  ],
  "fields": [
   {
@@ -170,13 +171,19 @@
    "fieldname": "include_unsubscribe_in_marketing",
    "fieldtype": "Check",
    "label": "Include Unsubscribe in Marketing"
+  },
+  {
+   "description": "Comma-separated template name prefixes. Templates whose actual_name starts with one of these prefixes are treated as consent-request templates (is_consent_request=1, requires_opt_in=0) during Meta sync.",
+   "fieldname": "consent_request_template_prefixes",
+   "fieldtype": "Small Text",
+   "label": "Consent Request Template Prefixes"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-02-06 16:38:17.283551",
+ "modified": "2026-03-25 16:38:17.283551",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Compliance Settings",

@@ -10,7 +10,7 @@ from frappe.model.document import Document
 from frappe.integrations.utils import make_post_request, make_request
 from frappe import _
 from frappe_whatsapp.utils import get_whatsapp_account
-from frappe_whatsapp.utils.consent import get_compliance_settings
+from frappe_whatsapp.utils.consent import get_compliance_settings, get_opt_out_keywords
 from frappe.utils import get_bench_path, get_site_base_path
 from typing import Any, Mapping, cast
 
@@ -18,6 +18,19 @@ _ALLOWED_CATEGORY = {
     "", "TRANSACTIONAL", "MARKETING", "OTP", "UTILITY", "AUTHENTICATION"
 }
 _ALLOWED_HEADER_TYPE = {"", "TEXT", "DOCUMENT", "IMAGE"}
+
+# Categories that do not require opt-in by default
+_NON_MARKETING_CATEGORIES = frozenset(
+    {"UTILITY", "AUTHENTICATION", "OTP", "TRANSACTIONAL"})
+
+# Compliance fields whose manual edits should clear compliance_auto_managed
+_COMPLIANCE_FIELDS = (
+    "requires_opt_in",
+    "include_unsubscribe_instructions",
+    "unsubscribe_text",
+    "is_consent_request",
+    "required_consent_category",
+)
 
 
 class WhatsAppTemplates(Document):
@@ -32,6 +45,7 @@ class WhatsAppTemplates(Document):
 
         actual_name: DF.Data | None
         buttons: DF.Table[WhatsAppButton]
+        compliance_auto_managed: DF.Check
         category: DF.Literal["", "TRANSACTIONAL", "MARKETING", "OTP", "UTILITY", "AUTHENTICATION"]
         field_names: DF.SmallText | None
         footer: DF.Data | None
@@ -60,12 +74,12 @@ class WhatsAppTemplates(Document):
         # printing self for easier debugging in case of errors during
         # validation
         self.set_whatsapp_account()
+
+        before = cast(WhatsAppTemplates, self.get_doc_before_save())
+        self._detect_manual_compliance_change(before)
+
         self._apply_marketing_unsubscribe_rules()
         self._apply_consent_request_rules()
-
-        before = cast(
-            WhatsAppTemplates,
-            self.get_doc_before_save())
 
         language_changed = False
         if before:
@@ -82,6 +96,23 @@ class WhatsAppTemplates(Document):
 
         if not self.is_new():
             self.update_template()
+
+    def _detect_manual_compliance_change(
+        self, before: "WhatsAppTemplates | None"
+    ) -> None:
+        """Clear compliance_auto_managed if the user changed a compliance field.
+
+        Only acts when the existing record was previously auto-managed
+        (compliance_auto_managed == 1).  That way a subsequent Meta sync will
+        not silently overwrite the operator's deliberate choice.
+        """
+        if not before or not before.compliance_auto_managed:
+            return
+        for field in _COMPLIANCE_FIELDS:
+            if str(getattr(self, field) or "") != str(
+                    getattr(before, field) or ""):
+                self.compliance_auto_managed = 0
+                return
 
     def _apply_marketing_unsubscribe_rules(self) -> None:
         """Auto-inject unsubscribe text for marketing templates
@@ -723,6 +754,7 @@ def fetch() -> str:
 
                             doc.append("buttons", btn)
 
+                _derive_sync_compliance(doc, is_new=(existing_name is None))
                 upsert_doc_without_hooks(doc, "WhatsApp Button", "buttons")
 
         except Exception as e:
@@ -749,3 +781,117 @@ def upsert_doc_without_hooks(doc, child_dt, child_field):
         d.parentfield = child_field
         d.db_insert()
     frappe.db.commit()
+
+
+def _footer_looks_like_unsubscribe(
+    footer: str,
+    settings: Any,
+    whatsapp_account: str | None = None,
+) -> bool:
+    """Return True if *footer* clearly contains opt-out / unsubscribe text.
+
+    Two detection passes:
+    1. Check against ``default_unsubscribe_text`` from Compliance Settings.
+    2. Check against enabled WhatsApp Opt Out Keyword rows, scoped to
+       *whatsapp_account* (account-specific keywords + global keywords only).
+
+    Keyword matching mirrors the semantics of ``check_opt_out_keyword()``
+    in consent.py: case normalisation first, then strip for Exact comparisons,
+    and ``match_type`` (Exact / Contains / Starts With) is honoured.
+    """
+    footer_lower = footer.lower()
+
+    default_unsub = str(
+        getattr(settings, "default_unsubscribe_text", "") or "").strip()
+    if default_unsub and default_unsub.lower() in footer_lower:
+        return True
+
+    try:
+        keywords = get_opt_out_keywords(whatsapp_account)
+        for kw in keywords:
+            kw_text = str(kw.get("keyword", "")).strip()
+            if not kw_text:
+                continue
+
+            # Mirror check_opt_out_keyword: normalise case, then strip text
+            if kw.get("case_sensitive"):
+                text = footer.strip()
+            else:
+                kw_text = kw_text.lower()
+                text = footer_lower.strip()
+
+            match_type = kw.get("match_type", "Exact")
+            if match_type == "Exact":
+                matched = text == kw_text
+            elif match_type == "Contains":
+                matched = kw_text in text
+            elif match_type == "Starts With":
+                matched = text.startswith(kw_text)
+            else:
+                matched = False
+
+            if matched:
+                return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _derive_sync_compliance(doc: "WhatsAppTemplates", is_new: bool) -> None:
+    """Populate compliance defaults on a template imported from Meta.
+
+    Called from ``fetch()`` before ``upsert_doc_without_hooks()``.  Never
+    modifies ``doc.footer`` — that would push invented content back to Meta.
+
+    Skip / run logic:
+    - New template (is_new=True)       → always apply.
+    - Existing, compliance_auto_managed=1 → re-derive; all owned fields are
+                                           reset first so re-derivation is
+                                           fully authoritative.
+    - Existing, compliance_auto_managed=0 → skip; preserve existing values
+                                           regardless of what they are.
+    """
+    if not is_new and not doc.compliance_auto_managed:
+        return
+
+    # Reset all owned compliance fields before re-deriving so that stale
+    # values from a previous sync (e.g. is_consent_request=1 after a prefix
+    # is removed from settings) are cleared rather than carried forward.
+    doc.is_consent_request = 0
+    doc.requires_opt_in = 0
+    doc.required_consent_category = None
+    doc.include_unsubscribe_instructions = 0
+    doc.unsubscribe_text = ""
+
+    settings = get_compliance_settings()
+    category = str(doc.category or "")
+    template_name = str(doc.actual_name or doc.template_name or "")
+    footer = str(doc.footer or "").strip()
+    whatsapp_account = str(doc.whatsapp_account or "") or None
+
+    # --- consent-request prefix check ---
+    prefixes_raw = str(
+        getattr(settings, "consent_request_template_prefixes", "") or "")
+    prefixes = [p.strip() for p in prefixes_raw.split(",") if p.strip()]
+
+    if prefixes and any(template_name.startswith(p) for p in prefixes):
+        doc.is_consent_request = 1
+        doc.requires_opt_in = 0
+        doc.required_consent_category = None
+    else:
+        # Category-based opt-in default
+        if category == "MARKETING":
+            doc.requires_opt_in = 1
+        elif category in _NON_MARKETING_CATEGORIES:
+            doc.requires_opt_in = 0
+        # Unknown / blank category: leave at reset default (0)
+
+    # --- footer unsubscribe detection (read-only; never writes to doc.footer) ---
+    if footer:
+        detected = _footer_looks_like_unsubscribe(
+            footer, settings, whatsapp_account=whatsapp_account)
+        doc.include_unsubscribe_instructions = 1 if detected else 0
+        doc.unsubscribe_text = footer if detected else ""
+
+    doc.compliance_auto_managed = 1

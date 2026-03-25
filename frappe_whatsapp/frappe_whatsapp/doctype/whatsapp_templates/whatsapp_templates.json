@@ -36,7 +36,8 @@
   "is_consent_request",
   "include_unsubscribe_instructions",
   "unsubscribe_text",
-  "is_transactional"
+  "is_transactional",
+  "compliance_auto_managed"
  ],
  "fields": [
   {
@@ -218,12 +219,20 @@
    "fieldname": "is_consent_request",
    "fieldtype": "Check",
    "label": "Is Consent Request"
+  },
+  {
+   "default": "0",
+   "description": "Compliance fields were last set by auto-sync. Cleared when operator manually edits any compliance field.",
+   "fieldname": "compliance_auto_managed",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Compliance Auto-Managed"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-02-18 17:29:32.021989",
+ "modified": "2026-03-25 17:29:32.021989",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Templates",

@@ -16,6 +16,7 @@ class WhatsAppComplianceSettings(Document):
 
 		allow_transactional_without_consent: DF.Check
 		consent_check_mode: DF.Literal["Strict", "Warning Only", "Disabled"]
+		consent_request_template_prefixes: DF.SmallText | None
 		default_unsubscribe_text: DF.SmallText | None
 		enable_opt_in_detection: DF.Check
 		enable_opt_out_detection: DF.Check
