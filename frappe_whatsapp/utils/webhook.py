@@ -427,7 +427,16 @@ def _handle_consent_keywords(
         *, body_text: str, contact_number: str,
         whatsapp_account_name: str, message_doc_name: str,
         profile_name: str | None) -> None:
-    """Detect opt-out or opt-in keywords and update profile consent."""
+    """Detect opt-out or opt-in keywords and update profile consent.
+
+    Text that matches neither an opt-out nor an opt-in keyword is silently
+    ignored — no consent change is made.  In particular, a ``NO`` quick-reply
+    to a consent-request template falls through here without any action:
+    declining a consent invitation is not the same as opting out, and the
+    contact's status intentionally stays Unknown.  To implement explicit
+    NO-handling (e.g. sending a "you will not receive further messages" reply),
+    add it here after the opt-in check.
+    """
     # Check opt-out first (takes priority over opt-in)
     keyword_match = check_opt_out_keyword(
         body_text, whatsapp_account=whatsapp_account_name)
