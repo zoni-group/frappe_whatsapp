@@ -659,7 +659,24 @@ def _log_consent(
 
 
 def enforce_marketing_template_compliance(template) -> None:
-    """Block sending marketing templates without unsubscribe instructions."""
+    """Block sending marketing templates without unsubscribe instructions.
+
+    The footer is **always** re-verified against the actual text — the
+    ``include_unsubscribe_instructions`` flag is intentionally ignored here
+    because it is user-editable and must not serve as a blanket pass-through.
+
+    Verification passes (any hit = compliant footer):
+    1. Template-level ``unsubscribe_text`` appears in the footer
+       (case-insensitive exact substring).
+    2. Shared semantic detection via ``_footer_looks_like_unsubscribe``
+       (same logic as sync-time ``_derive_sync_compliance``):
+       a. ``settings.default_unsubscribe_text`` substring in footer.
+       b. Enabled opt-out keyword rows matching the footer.
+       c. Regex heuristic: verb+STOP ("reply STOP", "replying STOP", …),
+          "opt out" / "opt-out", or "unsubscribe".
+          NOTE: bare "STOP" without a preceding communication verb is NOT
+          matched — "Stop by our office for help" must not pass.
+    """
     if not template or getattr(template, "category", "") != "MARKETING":
         return
 
@@ -667,22 +684,35 @@ def enforce_marketing_template_compliance(template) -> None:
     if not settings.include_unsubscribe_in_marketing:
         return
 
-    unsubscribe_text = (
-        (getattr(template, "unsubscribe_text", "") or "").strip()
-        or (settings.default_unsubscribe_text or "").strip()
-    )
+    footer = (getattr(template, "footer", "") or "").strip()
+
+    # Pass 1: template-level unsubscribe_text (explicit operator choice).
+    tmpl_unsub = (getattr(template, "unsubscribe_text", "") or "").strip()
+    if tmpl_unsub and tmpl_unsub.lower() in footer.lower():
+        return
+
+    # Pass 2 (a–c): shared semantic detection — same logic as sync-time.
+    # Late import avoids a circular dependency (whatsapp_templates imports
+    # from consent, not the other way round).
+    if footer:
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_templates.whatsapp_templates import (  # noqa: E501
+            _footer_looks_like_unsubscribe,
+        )
+        if _footer_looks_like_unsubscribe(footer, settings):
+            return
+
+    unsubscribe_text = tmpl_unsub or (
+        settings.default_unsubscribe_text or "").strip()
     if not unsubscribe_text:
         frappe.throw(
             _("Unsubscribe text is required for marketing templates. "
               "Set it on the template or in Compliance Settings.")
         )
 
-    footer = (getattr(template, "footer", "") or "").strip()
-    if unsubscribe_text not in footer:
-        frappe.throw(
-            _("Marketing templates must include unsubscribe text in the "
-              "footer. Please update the template.")
-        )
+    frappe.throw(
+        _("Marketing templates must include unsubscribe text in the "
+          "footer. Please update the template.")
+    )
 
 
 def enforce_template_send_rules(

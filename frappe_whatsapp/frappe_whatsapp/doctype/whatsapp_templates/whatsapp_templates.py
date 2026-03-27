@@ -32,6 +32,38 @@ _COMPLIANCE_FIELDS = (
     "required_consent_category",
 )
 
+# Regex matching actionable opt-out instructions in a template footer.
+#
+# Design rationale:
+#   • "STOP" alone is NOT matched — the word appears in many non-opt-out
+#     contexts (e.g. "Stop by our office for help", "we'll never stop caring").
+#     STOP is matched only when it immediately follows a recognised send verb
+#     (reply / text / send / type and their -ing forms), with at most three
+#     filler words in between.
+#   • "opt out" / "opt-out" are treated as inherently actionable in footer
+#     context; they are almost exclusively used to mean "remove yourself from
+#     this list".
+#   • "unsubscribe" is treated similarly — virtually always an instruction
+#     when it appears in a message footer.
+_OPT_OUT_FOOTER_RE = re.compile(
+    r"""
+    (?:
+        # Verb-then-STOP: "reply STOP", "text STOP", "replying STOP",
+        # "reply with STOP", "send a message STOP", etc.
+        # Capped at 3 filler words so the pattern cannot span a full sentence.
+        \b(?:repl(?:y|ying)|text(?:ing)?|send(?:ing)?|type|typing|msg(?:ing)?)\b
+        (?:\s+\w+){0,3}?\s+\bSTOP\b
+        |
+        # "opt out" or "opt-out" as a phrase
+        \bopt[\s\-]out\b
+        |
+        # "unsubscribe" as an action word
+        \bunsubscribe\b
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 
 class WhatsAppTemplates(Document):
     # begin: auto-generated types
@@ -142,10 +174,16 @@ class WhatsAppTemplates(Document):
             return
 
         if unsubscribe_text not in footer:
-            # Keep content readable; avoid double separators.
-            separator = "\n" if "\n" in footer else " "
-            self.footer = f"{footer}{separator}{unsubscribe_text}"
-            self.include_unsubscribe_instructions = 1
+            if _footer_looks_like_unsubscribe(footer, settings):
+                # Footer already contains valid opt-out wording in natural
+                # language (e.g. "You can opt out at any time by replying
+                # STOP."); accept it without appending the configured text.
+                self.include_unsubscribe_instructions = 1
+            else:
+                # Keep content readable; avoid double separators.
+                separator = "\n" if "\n" in footer else " "
+                self.footer = f"{footer}{separator}{unsubscribe_text}"
+                self.include_unsubscribe_instructions = 1
 
     def _apply_consent_request_rules(self) -> None:
         """Normalize consent-request templates so they can bootstrap opt-in.
@@ -790,22 +828,33 @@ def _footer_looks_like_unsubscribe(
 ) -> bool:
     """Return True if *footer* clearly contains opt-out / unsubscribe text.
 
-    Two detection passes:
-    1. Check against ``default_unsubscribe_text`` from Compliance Settings.
+    Three detection passes (any hit returns True):
+
+    1. Check against ``default_unsubscribe_text`` from Compliance Settings
+       (case-insensitive substring match).
     2. Check against enabled WhatsApp Opt Out Keyword rows, scoped to
        *whatsapp_account* (account-specific keywords + global keywords only).
-
-    Keyword matching mirrors the semantics of ``check_opt_out_keyword()``
-    in consent.py: case normalisation first, then strip for Exact comparisons,
-    and ``match_type`` (Exact / Contains / Starts With) is honoured.
+       Keyword matching mirrors ``check_opt_out_keyword()`` in consent.py:
+       case normalisation first, then ``match_type``
+       (Exact / Contains / Starts With).
+    3. Regex heuristic — accepts naturally-worded footers that contain
+       recognised opt-out terms (stop, unsubscribe, opt-out / opt out) even
+       when the footer does not match the exact configured text.  This handles
+       Meta-approved footers like
+       "You can opt out at any time by replying STOP."
     """
+    if not footer:
+        return False
+
     footer_lower = footer.lower()
 
+    # Pass 1: configured default unsubscribe text
     default_unsub = str(
         getattr(settings, "default_unsubscribe_text", "") or "").strip()
     if default_unsub and default_unsub.lower() in footer_lower:
         return True
 
+    # Pass 2: opt-out keyword rows from DB
     try:
         keywords = get_opt_out_keywords(whatsapp_account)
         for kw in keywords:
@@ -834,6 +883,10 @@ def _footer_looks_like_unsubscribe(
                 return True
     except Exception:
         pass
+
+    # Pass 3: regex heuristic — common opt-out terms in any wording
+    if _OPT_OUT_FOOTER_RE.search(footer):
+        return True
 
     return False
 

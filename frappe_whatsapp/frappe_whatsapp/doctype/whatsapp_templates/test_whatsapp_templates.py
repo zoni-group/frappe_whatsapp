@@ -12,7 +12,7 @@ from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_templates.whatsapp_templat
     _footer_looks_like_unsubscribe,
     _normalize_meta_language_code,
     _resolve_language_link,
-    WhatsAppTemplates,
+    WhatsAppTemplates
 )
 
 
@@ -282,6 +282,72 @@ class TestComplianceSyncDefaults(FrappeTestCase):
             result = _footer_looks_like_unsubscribe("", settings)
         self.assertFalse(result)
 
+    # ------------------------------------------------------------------
+    # Regex pass 3: naturally-worded opt-out footers
+    # ------------------------------------------------------------------
+    def test_footer_with_stop_matches_via_regex(self):
+        """Footer containing 'STOP' (no exact configured text, no keywords)
+        must match via the regex heuristic — the con_req_zoni-en scenario."""
+        settings = _make_settings(default_unsubscribe_text="")
+        with patch(f"{_MOD}.get_opt_out_keywords", return_value=[]):
+            result = _footer_looks_like_unsubscribe(
+                "You can opt out at any time by replying STOP.", settings)
+        self.assertTrue(result)
+
+    def test_footer_with_unsubscribe_word_matches_via_regex(self):
+        settings = _make_settings(default_unsubscribe_text="")
+        with patch(f"{_MOD}.get_opt_out_keywords", return_value=[]):
+            result = _footer_looks_like_unsubscribe(
+                "Click here to unsubscribe from these messages.", settings)
+        self.assertTrue(result)
+
+    def test_footer_with_opt_out_phrase_matches_via_regex(self):
+        settings = _make_settings(default_unsubscribe_text="")
+        with patch(f"{_MOD}.get_opt_out_keywords", return_value=[]):
+            result = _footer_looks_like_unsubscribe(
+                "To opt out reply with your number.", settings)
+        self.assertTrue(result)
+
+    def test_unrelated_footer_not_matched_by_regex(self):
+        """A footer with no opt-out terms must still return False."""
+        settings = _make_settings(default_unsubscribe_text="")
+        with patch(f"{_MOD}.get_opt_out_keywords", return_value=[]):
+            result = _footer_looks_like_unsubscribe(
+                "Powered by Acme Corp", settings)
+        self.assertFalse(result)
+
+    def test_stop_in_non_opt_out_context_not_matched(self):
+        """'Stop by our office for help' must NOT match — bare STOP without
+        a preceding communication verb is not actionable opt-out language."""
+        settings = _make_settings(default_unsubscribe_text="")
+        with patch(f"{_MOD}.get_opt_out_keywords", return_value=[]):
+            result = _footer_looks_like_unsubscribe(
+                "Stop by our office for help.", settings)
+        self.assertFalse(result)
+
+    # ------------------------------------------------------------------
+    # _derive_sync_compliance with naturally-worded footer (regex path)
+    # ------------------------------------------------------------------
+    @patch(f"{_MOD}.get_opt_out_keywords", return_value=[])
+    @patch(f"{_MOD}.get_compliance_settings")
+    def test_derive_sync_detects_natural_footer_via_regex(
+        self, mock_settings, _mock_kw
+    ):
+        """_derive_sync_compliance must set include_unsubscribe_instructions
+        for footers that pass only the regex heuristic."""
+        mock_settings.return_value = _make_settings(
+            default_unsubscribe_text="Reply STOP to unsubscribe")
+        doc = _make_doc(
+            category="MARKETING",
+            footer="You can opt out at any time by replying STOP.",
+        )
+        _derive_sync_compliance(doc, is_new=True)
+
+        self.assertEqual(doc.include_unsubscribe_instructions, 1)
+        self.assertEqual(
+            doc.unsubscribe_text,
+            "You can opt out at any time by replying STOP.")
+
 
 # ===========================================================================
 # Fix 1: Stale consent-request state cleared on re-sync
@@ -362,14 +428,19 @@ class TestFooterDetectionAccountScopingAndMatchType(FrappeTestCase):
     def test_account_specific_keyword_not_used_for_different_account(
         self, mock_kw
     ):
-        """Keyword configured for account B must not fire for account A."""
+        """Keyword configured for account B must not fire for account A.
+
+        Uses a custom footer/keyword ("DEACTIVATE") that does not contain any
+        of the regex-heuristic opt-out terms (stop/unsubscribe/opt-out), so
+        that account-scoping is the *only* detection path that could fire.
+        """
         # get_opt_out_keywords is called with account A; it returns no rows
         # (simulating that account A has no keywords, B's are filtered out)
         mock_kw.return_value = []
         settings = _make_settings(default_unsubscribe_text="")
 
         result = _footer_looks_like_unsubscribe(
-            "Reply STOP to unsubscribe",
+            "Reply DEACTIVATE to cancel your messages",
             settings,
             whatsapp_account="account_a",
         )
@@ -386,13 +457,13 @@ class TestFooterDetectionAccountScopingAndMatchType(FrappeTestCase):
     ):
         """Keyword returned for the correct account must still fire."""
         mock_kw.return_value = [
-            {"keyword": "STOP", "case_sensitive": False,
+            {"keyword": "DEACTIVATE", "case_sensitive": False,
              "match_type": "Contains"},
         ]
         settings = _make_settings(default_unsubscribe_text="")
 
         result = _footer_looks_like_unsubscribe(
-            "Reply STOP to opt out",
+            "Reply DEACTIVATE to cancel your messages",
             settings,
             whatsapp_account="account_a",
         )
@@ -430,15 +501,17 @@ class TestFooterDetectionAccountScopingAndMatchType(FrappeTestCase):
     def test_exact_match_type_does_not_match_substring(self, mock_kw):
         mock_kw.return_value = [
             {
-                "keyword": "STOP",
+                "keyword": "DEACTIVATE",
                 "case_sensitive": False,
                 "match_type": "Exact",
             },
         ]
         settings = _make_settings(default_unsubscribe_text="")
-        # Keyword is a substring, not the whole footer → must not match
+        # Keyword is a substring of the footer but not the whole footer, and
+        # the footer has no regex-heuristic opt-out terms → must not match.
         self.assertFalse(
-            _footer_looks_like_unsubscribe("Reply STOP to opt out", settings))
+            _footer_looks_like_unsubscribe(
+                "Reply DEACTIVATE to cancel", settings))
 
     # ------------------------------------------------------------------
     # match_type: Starts With
@@ -457,12 +530,14 @@ class TestFooterDetectionAccountScopingAndMatchType(FrappeTestCase):
     @patch(f"{_MOD}.get_opt_out_keywords")
     def test_starts_with_does_not_match_non_prefix(self, mock_kw):
         mock_kw.return_value = [
-            {"keyword": "STOP", "case_sensitive": False,
+            {"keyword": "DEACTIVATE", "case_sensitive": False,
              "match_type": "Starts With"},
         ]
         settings = _make_settings(default_unsubscribe_text="")
+        # Footer does not start with keyword and has no regex opt-out terms
         self.assertFalse(
-            _footer_looks_like_unsubscribe("Reply STOP to opt out", settings))
+            _footer_looks_like_unsubscribe(
+                "Reply DEACTIVATE to cancel", settings))
 
     # ------------------------------------------------------------------
     # Verify _derive_sync_compliance passes account to footer detection
