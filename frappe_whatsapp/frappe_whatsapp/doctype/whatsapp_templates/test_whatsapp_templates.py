@@ -299,7 +299,8 @@ class TestComplianceSyncDefaults(FrappeTestCase):
         with patch(f"{_MOD}.get_opt_out_keywords", return_value=[]):
             result = _footer_looks_like_unsubscribe(
                 (
-                    "Responda STOP para cancelar o recebimento de comunicacoes.\n"
+                    "Responda STOP para cancelar o recebimento"
+                    " de comunicacoes.\n"
                     "Responde STOP para darte de baja."
                 ),
                 settings,
@@ -329,7 +330,8 @@ class TestComplianceSyncDefaults(FrappeTestCase):
         self.assertFalse(result)
 
     def test_stop_in_non_opt_out_context_not_matched(self):
-        """Title-case prose must not match the standalone uppercase STOP path."""
+        """Title-case prose must not match the standalone uppercase
+        STOP path."""
         settings = _make_settings(default_unsubscribe_text="")
         with patch(f"{_MOD}.get_opt_out_keywords", return_value=[]):
             result = _footer_looks_like_unsubscribe(

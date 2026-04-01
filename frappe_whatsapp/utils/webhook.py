@@ -4,7 +4,8 @@ import hashlib
 import hmac
 import json
 import requests
-from frappe.utils.password import get_decrypted_password as _get_decrypted_password
+from frappe.utils.password import get_decrypted_password as \
+    _get_decrypted_password
 from werkzeug.wrappers import Response
 from typing import cast, Any
 
@@ -134,7 +135,8 @@ def _get_active_app_secrets() -> list[str]:
 
 
 def _verify_webhook_signature(raw_body: bytes, sig_header: str) -> bool:
-    """Return True when ``X-Hub-Signature-256`` matches a configured app secret.
+    """Return True when ``X-Hub-Signature-256`` matches a configured app
+    secret.
 
     Meta signs every webhook POST with ``HMAC-SHA256(app_secret, raw_body)``
     and includes the result as ``X-Hub-Signature-256: sha256=<hex>``.
@@ -281,6 +283,28 @@ def process_webhook_payload(data: dict):
             update_status(changes)
 
 
+def _enqueue_language_detection(
+        *, contact_number: str, whatsapp_account: str,
+        text: str, message_doc_name: str,
+        profile_name: str | None) -> None:
+    """Enqueue language detection as a best-effort background job.
+
+    Runs in the *short* queue after the current transaction commits so it
+    never delays inbound message forwarding or consent processing.
+    All failure handling lives inside ``update_profile_language`` itself.
+    """
+    frappe.enqueue(
+        "frappe_whatsapp.utils.language_detection.update_profile_language",
+        queue="short",
+        enqueue_after_commit=True,
+        contact_number=contact_number,
+        whatsapp_account=whatsapp_account,
+        text=text,
+        message_doc_name=message_doc_name,
+        profile_name=profile_name,
+    )
+
+
 def _process_incoming_message(
         *, message: dict, whatsapp_account, sender_profile_name: str | None):
 
@@ -338,6 +362,14 @@ def _process_incoming_message(
             profile_name=sender_profile_name,
         )
 
+        _enqueue_language_detection(
+            contact_number=contact_number,
+            whatsapp_account=str(whatsapp_account.name),
+            text=body_text,
+            message_doc_name=str(doc.name),
+            profile_name=sender_profile_name,
+        )
+
         forward_incoming_to_app_async(incoming_message_name=str(doc.name))
 
     elif message_type == "interactive":
@@ -375,6 +407,15 @@ def _process_incoming_message(
             message_doc_name=str(msg_doc.name),
             profile_name=sender_profile_name,
         )
+
+        if caption_text:
+            _enqueue_language_detection(
+                contact_number=contact_number,
+                whatsapp_account=str(whatsapp_account.name),
+                text=caption_text,
+                message_doc_name=str(msg_doc.name),
+                profile_name=sender_profile_name,
+            )
 
         media_id = (message.get(message_type) or {}).get("id")
         if media_id:
@@ -419,6 +460,15 @@ def _process_incoming_message(
             message_doc_name=str(doc.name),
             profile_name=sender_profile_name,
         )
+
+        if body_text:
+            _enqueue_language_detection(
+                contact_number=contact_number,
+                whatsapp_account=str(whatsapp_account.name),
+                text=body_text,
+                message_doc_name=str(doc.name),
+                profile_name=sender_profile_name,
+            )
 
         forward_incoming_to_app_async(incoming_message_name=str(doc.name))
 
@@ -503,6 +553,18 @@ def _handle_interactive(
             message_doc_name=str(doc.name),
             profile_name=sender_profile_name,
         )
+
+        # Detect language from the human-readable title only (not payload id)
+        button_title = str(payload.get("title") or "")
+        if button_title:
+            _enqueue_language_detection(
+                contact_number=str(message.get("from") or ""),
+                whatsapp_account=str(whatsapp_account.name),
+                text=button_title,
+                message_doc_name=str(doc.name),
+                profile_name=sender_profile_name,
+            )
+
         forward_incoming_to_app_async(incoming_message_name=str(doc.name))
 
     # flows

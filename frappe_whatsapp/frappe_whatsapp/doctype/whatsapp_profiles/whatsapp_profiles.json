@@ -33,7 +33,14 @@
   "compliance_metadata_section",
   "consent_version",
   "gdpr_consent",
-  "consent_ip_address"
+  "consent_ip_address",
+  "language_detection_section",
+  "detected_language",
+  "detected_language_name",
+  "column_break_lang_det",
+  "language_detection_confidence",
+  "language_detected_at",
+  "language_source_message"
  ],
  "fields": [
   {
@@ -186,6 +193,47 @@
    "label": "Consent IP Address"
   },
   {
+   "fieldname": "language_detection_section",
+   "fieldtype": "Section Break",
+   "label": "Language Detection"
+  },
+  {
+   "description": "ISO 639-1 code of the detected language (e.g. en, es, pt)",
+   "fieldname": "detected_language",
+   "fieldtype": "Data",
+   "in_list_view": 0,
+   "label": "Detected Language Code"
+  },
+  {
+   "description": "Human-readable name of the detected language",
+   "fieldname": "detected_language_name",
+   "fieldtype": "Data",
+   "label": "Detected Language"
+  },
+  {
+   "fieldname": "column_break_lang_det",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Confidence score from the language detector (0–1)",
+   "fieldname": "language_detection_confidence",
+   "fieldtype": "Float",
+   "label": "Detection Confidence",
+   "precision": "4"
+  },
+  {
+   "description": "When this language was last detected",
+   "fieldname": "language_detected_at",
+   "fieldtype": "Datetime",
+   "label": "Detected At"
+  },
+  {
+   "description": "WhatsApp Message doc name used for detection",
+   "fieldname": "language_source_message",
+   "fieldtype": "Data",
+   "label": "Source Message"
+  },
+  {
    "fieldname": "column_break_zd9z",
    "fieldtype": "Column Break"
   },
@@ -213,7 +261,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-02-06 16:46:58.115766",
+ "modified": "2026-03-31 16:46:58.115766",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Profiles",

@@ -1,9 +1,9 @@
 # Copyright (c) 2025, Shridhar Patil and contributors
 # For license information, please see license.txt
 
-import frappe
 from frappe.model.document import Document
 from frappe_whatsapp.utils import format_number
+
 
 class WhatsAppProfiles(Document):
     # begin: auto-generated types
@@ -20,11 +20,16 @@ class WhatsAppProfiles(Document):
         consent_status: DF.Literal["Unknown", "Opted In", "Opted Out", "Partial"]
         consent_version: DF.Data | None
         contact: DF.Link | None
+        detected_language: DF.Data | None
+        detected_language_name: DF.Data | None
         do_not_contact: DF.Check
         do_not_contact_reason: DF.SmallText | None
         gdpr_consent: DF.Check
         is_opted_in: DF.Check
         is_opted_out: DF.Check
+        language_detected_at: DF.Datetime | None
+        language_detection_confidence: DF.Float
+        language_source_message: DF.Data | None
         number: DF.Data
         opted_in_at: DF.Datetime | None
         opted_in_method: DF.Literal["Explicit Form", "API", "Imported", "Web Widget", "WhatsApp Reply", "Legacy"]
@@ -36,6 +41,7 @@ class WhatsAppProfiles(Document):
         title: DF.Data | None
         whatsapp_account: DF.Link | None
     # end: auto-generated types
+
     def validate(self):
         self.format_whatsapp_number()
         self.set_title()
@@ -45,4 +51,5 @@ class WhatsAppProfiles(Document):
             self.number = format_number(self.number)
 
     def set_title(self):
-        self.title = " - ".join(filter(None, [self.profile_name, self.number])) or "Unnamed Profile"
+        self.title = " - ".join(filter(
+            None, [self.profile_name, self.number])) or "Unnamed Profile"
