@@ -1,0 +1,107 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-04-01 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "whatsapp_account",
+  "contact_number",
+  "anchor_message",
+  "automation_type",
+  "send_status",
+  "template",
+  "outgoing_message",
+  "sent_at",
+  "claim_expires_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "whatsapp_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "WhatsApp Account",
+   "options": "WhatsApp Account"
+  },
+  {
+   "fieldname": "contact_number",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Contact Number"
+  },
+  {
+   "description": "The inbound message that anchors this automation run. Unique — enforces that the same anchor can only be processed once.",
+   "fieldname": "anchor_message",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Anchor Message",
+   "options": "WhatsApp Message",
+   "search_index": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "automation_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Automation Type",
+   "options": "consent_request\nstatus_follow_up"
+  },
+  {
+   "default": "Pending",
+   "description": "Pending = claimed but not yet sent (lease active or stale); Sent = message delivered successfully; Skipped = terminal, business-rule failure during recovery (DNC, consent change, invalid template).",
+   "fieldname": "send_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Send Status",
+   "options": "Pending\nSent\nSkipped"
+  },
+  {
+   "description": "Lease expiry for the Pending claim. NULL or past-due claims are reclaimable by the recovery scheduler.",
+   "fieldname": "claim_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Claim Expires At"
+  },
+  {
+   "fieldname": "template",
+   "fieldtype": "Link",
+   "label": "Template",
+   "options": "WhatsApp Templates"
+  },
+  {
+   "fieldname": "outgoing_message",
+   "fieldtype": "Link",
+   "label": "Outgoing Message",
+   "options": "WhatsApp Message"
+  },
+  {
+   "fieldname": "sent_at",
+   "fieldtype": "Datetime",
+   "label": "Sent At"
+  }
+ ],
+ "links": [],
+ "modified": "2026-04-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Frappe Whatsapp",
+ "name": "WhatsApp Hour 23 Automation Log",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "sent_at",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -128,6 +128,10 @@ scheduler_events = {
         "frappe_whatsapp.utils.trigger_whatsapp_notifications_hourly",
         ("frappe_whatsapp.utils.status_notifier"
          ".retry_failed_status_notifications"),
+        ("frappe_whatsapp.utils.hour_23_automation"
+         ".run_hour_23_automation"),
+        ("frappe_whatsapp.utils.hour_23_automation"
+         ".recover_stale_hour_23_claims"),
     ],
     "hourly_long": [
         "frappe_whatsapp.utils.trigger_whatsapp_notifications_hourly_long"

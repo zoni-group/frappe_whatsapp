@@ -360,6 +360,7 @@ def _process_incoming_message(
             whatsapp_account_name=str(whatsapp_account.name),
             message_doc_name=str(doc.name),
             profile_name=sender_profile_name,
+            reply_to_message_id=reply_to_message_id,
         )
 
         _enqueue_language_detection(
@@ -406,6 +407,7 @@ def _process_incoming_message(
             whatsapp_account_name=str(whatsapp_account.name),
             message_doc_name=str(msg_doc.name),
             profile_name=sender_profile_name,
+            reply_to_message_id=reply_to_message_id,
         )
 
         if caption_text:
@@ -459,6 +461,7 @@ def _process_incoming_message(
             whatsapp_account_name=str(whatsapp_account.name),
             message_doc_name=str(doc.name),
             profile_name=sender_profile_name,
+            reply_to_message_id=reply_to_message_id,
         )
 
         if body_text:
@@ -476,7 +479,8 @@ def _process_incoming_message(
 def _handle_consent_keywords(
         *, body_text: str, contact_number: str,
         whatsapp_account_name: str, message_doc_name: str,
-        profile_name: str | None) -> None:
+        profile_name: str | None,
+        reply_to_message_id: str | None = None) -> None:
     """Detect opt-out or opt-in keywords and update profile consent.
 
     Text that matches neither an opt-out nor an opt-in keyword is silently
@@ -486,6 +490,10 @@ def _handle_consent_keywords(
     contact's status intentionally stays Unknown.  To implement explicit
     NO-handling (e.g. sending a "you will not receive further messages" reply),
     add it here after the opt-in check.
+
+    When ``reply_to_message_id`` is provided and the replied-to message was
+    a consent-request template from the hour-23 automation, a category opt-in
+    is also recorded (if ``marketing_consent_category`` is configured).
     """
     # Check opt-out first (takes priority over opt-in)
     keyword_match = check_opt_out_keyword(
@@ -516,6 +524,82 @@ def _handle_consent_keywords(
         send_opt_in_confirmation(
             contact_number=contact_number,
             whatsapp_account_name=whatsapp_account_name,
+        )
+
+        # Category opt-in when replying to a consent-request template
+        if reply_to_message_id:
+            _maybe_do_category_opt_in(
+                reply_to_message_id=reply_to_message_id,
+                contact_number=contact_number,
+                whatsapp_account_name=whatsapp_account_name,
+                message_doc_name=message_doc_name,
+                profile_name=profile_name,
+            )
+
+
+def _maybe_do_category_opt_in(
+        *, reply_to_message_id: str, contact_number: str,
+        whatsapp_account_name: str, message_doc_name: str,
+        profile_name: str | None) -> None:
+    """Grant category-level marketing consent when replying to a hour-23 consent template.
+
+    Checks (in order):
+    1. ``marketing_consent_category`` is configured in Compliance Settings.
+    2. The replied-to outgoing message exists in the database.
+    3. That message is recorded in a ``WhatsApp Hour 23 Automation Log`` row
+       with ``automation_type = "consent_request"``.  This scopes the category
+       opt-in exclusively to the hour-23 automation flow; a YES reply to any
+       other consent-request template in the system is not affected.
+
+    If all checks pass, calls ``process_category_opt_in`` so the category row
+    is created/updated and a ``WhatsApp Consent Log`` entry is written.
+    Failures are swallowed so they never disrupt the inbound message flow.
+    """
+    try:
+        from frappe_whatsapp.utils.consent import (
+            get_compliance_settings,
+            process_category_opt_in,
+        )
+
+        settings = get_compliance_settings()
+        marketing_cat = getattr(settings, "marketing_consent_category", None)
+        if not marketing_cat:
+            return
+
+        # Look up the outgoing message that was replied to
+        replied_msg_name = frappe.db.get_value(
+            "WhatsApp Message",
+            {"message_id": reply_to_message_id, "type": "Outgoing"},
+            "name",
+        )
+        if not replied_msg_name:
+            return
+
+        # Only proceed when the replied-to message was sent by the hour-23
+        # automation with automation_type="consent_request".  This prevents
+        # every other consent-request template in the system from triggering
+        # a marketing category opt-in.
+        log_exists = frappe.db.exists(
+            "WhatsApp Hour 23 Automation Log",
+            {
+                "outgoing_message": replied_msg_name,
+                "automation_type": "consent_request",
+            },
+        )
+        if not log_exists:
+            return
+
+        process_category_opt_in(
+            contact_number=contact_number,
+            whatsapp_account=whatsapp_account_name,
+            consent_category=marketing_cat,
+            message_doc_name=message_doc_name,
+            profile_name=profile_name,
+        )
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            "WhatsApp: category opt-in from consent reply failed"
         )
 
 
@@ -552,6 +636,7 @@ def _handle_interactive(
             whatsapp_account_name=str(whatsapp_account.name),
             message_doc_name=str(doc.name),
             profile_name=sender_profile_name,
+            reply_to_message_id=reply_to_message_id,
         )
 
         # Detect language from the human-readable title only (not payload id)
