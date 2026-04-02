@@ -31,7 +31,8 @@
   "hour_23_automation_section",
   "enable_hour_23_follow_up",
   "marketing_consent_category",
-  "hour_23_language_map"
+  "hour_23_language_map",
+  "hour_23_template_parameters"
  ],
  "fields": [
   {
@@ -207,6 +208,13 @@
    "fieldtype": "Table",
    "label": "Language Map",
    "options": "WhatsApp Hour 23 Language Map"
+  },
+  {
+   "description": "Body-parameter mapping for parameterized hour-23 templates. Rows are keyed by template and ordered by parameter_index.",
+   "fieldname": "hour_23_template_parameters",
+   "fieldtype": "Table",
+   "label": "Template Parameter Mapping",
+   "options": "WhatsApp Hour 23 Template Parameter"
   }
  ],
  "grid_page_length": 50,

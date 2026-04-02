@@ -76,6 +76,11 @@ from frappe.utils import now_datetime, add_to_date
 from typing import Any, cast
 
 from frappe_whatsapp.utils import format_number
+from frappe_whatsapp.utils.hour_23_params import (
+    build_hour_23_body_params,
+    count_declared_meta_params,
+    load_contact_context,
+)
 
 # How long a freshly inserted Pending claim is considered live.
 # If a worker crashes between the commit and msg_doc.insert(), the row
@@ -95,6 +100,7 @@ def run_hour_23_automation() -> None:
         getattr(settings, "marketing_consent_category", None) or None
     )
     lang_map = _build_language_map(settings)
+    param_mapping = _build_param_mapping(settings)
 
     if not lang_map:
         frappe.log_error(
@@ -111,6 +117,7 @@ def run_hour_23_automation() -> None:
                 candidate=cand,
                 lang_map=lang_map,
                 marketing_consent_category=marketing_consent_category,
+                param_mapping=param_mapping,
             )
         except Exception:
             frappe.log_error(
@@ -136,6 +143,46 @@ def _build_language_map(settings) -> dict[str, Any]:
         if code:
             result[code] = row
     return result
+
+
+def _build_param_mapping(settings) -> dict[str, list]:
+    """Build ``{template_name: [sorted rows]}`` from child-table rows.
+
+    Rows for each template are sorted by ``parameter_index`` ascending so
+    that callers can iterate them in placeholder order without sorting
+    themselves.
+    """
+    rows = getattr(settings, "hour_23_template_parameters", None) or []
+    result: dict[str, list] = {}
+    for row in rows:
+        tmpl = (getattr(row, "template", None) or "").strip()
+        if tmpl:
+            result.setdefault(tmpl, []).append(row)
+    for tmpl in result:
+        result[tmpl].sort(
+            key=lambda r: int(getattr(r, "parameter_index", 0) or 0)
+        )
+    return result
+
+
+def _build_body_param_for_send(
+    template,
+    contact_number: str,
+    param_rows: list,
+) -> tuple[str | None, str | None]:
+    """Resolve body parameters for a parameterised template send.
+
+    Loads the contact context (WhatsApp profile + linked Contact) only
+    when ``param_rows`` is non-empty; returns ``(None, None)`` immediately
+    for parameter-less templates.  Delegates all resolution logic to
+    ``build_hour_23_body_params`` in ``hour_23_params.py``.
+
+    Returns ``(json_str, None)`` on success, ``(None, error_msg)`` when a
+    required parameter cannot be resolved, or ``(None, None)`` when the
+    template has no declared body parameters.
+    """
+    context = load_contact_context(contact_number) if param_rows else {}
+    return build_hour_23_body_params(template, context, param_rows)
 
 
 def _get_candidates(window_hours: int) -> list[dict]:
@@ -351,6 +398,8 @@ def _check_template_shape(
     template: Any,
     template_name: str,
     automation_type: str,
+    *,
+    has_body_param_mapping: bool = False,
 ) -> str | None:
     """Validate that the template can be sent by this automation.
 
@@ -374,9 +423,7 @@ def _check_template_shape(
             "consent template '{0}' is not marked is_consent_request=1"
         ).format(template_name)
 
-    if getattr(template, "sample_values", None) or getattr(
-        template, "field_names", None
-    ):
+    if not has_body_param_mapping and count_declared_meta_params(template) > 0:
         return _(
             "template '{0}' requires body parameters which the automation "
             "cannot supply"
@@ -560,6 +607,7 @@ def _process_candidate(
     candidate: dict,
     lang_map: dict,
     marketing_consent_category: str | None,
+    param_mapping: dict | None = None,
 ) -> None:
     """Process a single candidate contact.
 
@@ -622,8 +670,11 @@ def _process_candidate(
 
     # 4. Validate template shape
     template = frappe.get_doc("WhatsApp Templates", template_name)
-    shape_error = _check_template_shape(template,
-                                        template_name, automation_type)
+    param_rows = (param_mapping or {}).get(template_name, [])
+    shape_error = _check_template_shape(
+        template, template_name, automation_type,
+        has_body_param_mapping=bool(param_rows),
+    )
     if shape_error:
         frappe.log_error(
             _(
@@ -652,13 +703,26 @@ def _process_candidate(
                           template_name, anchor_message):
         return
 
+    # 5b. Resolve body parameters for parameterised templates.
+    body_param: str | None = None
+    if param_rows:
+        body_param, param_error = _build_body_param_for_send(
+            template, contact_number, param_rows
+        )
+        if param_error:
+            frappe.log_error(
+                _(
+                    "Hour-23 automation: {0}. Skipping contact {1}."
+                ).format(param_error, contact_number),
+                "WhatsApp Hour-23 Automation",
+            )
+            _mark_log_skipped(log_name)
+            return
+
     # 6. Send via normal WhatsApp Message insert/send path.
     # reference_doctype/reference_name link the outbound message back to this
     # log row so that _reconcile_if_already_sent() can detect a prior send if
     # the process crashes before Phase 3 (log finalisation).
-    # These fields are safe to set even though send_template() reads them for
-    # template parameters: that code path is guarded by template.sample_values
-    # which _check_template_shape() already rejects above.
     msg_doc = frappe.get_doc(
         {
             "doctype": "WhatsApp Message",
@@ -671,6 +735,7 @@ def _process_candidate(
             "whatsapp_account": whatsapp_account,
             "reference_doctype": "WhatsApp Hour 23 Automation Log",
             "reference_name": log_name,
+            "body_param": body_param,
         }
     )
     msg_doc.insert(ignore_permissions=True)
@@ -717,6 +782,7 @@ def recover_stale_hour_23_claims() -> None:
         getattr(settings, "marketing_consent_category", None) or None
     )
     lang_map = _build_language_map(settings)
+    param_mapping = _build_param_mapping(settings)
 
     now = now_datetime()
     stale = frappe.db.get_all(
@@ -742,6 +808,7 @@ def recover_stale_hour_23_claims() -> None:
                 row,
                 marketing_consent_category=marketing_consent_category,
                 lang_map=lang_map,
+                param_mapping=param_mapping,
             )
         except Exception:
             frappe.log_error(
@@ -757,6 +824,7 @@ def _retry_stale_claim(
     *,
     marketing_consent_category: str | None,
     lang_map: dict,
+    param_mapping: dict | None = None,
 ) -> None:
     """Re-attempt send for a single stale Pending log row.
 
@@ -884,8 +952,11 @@ def _retry_stale_claim(
 
     # 4. Re-validate template shape.
     template = frappe.get_doc("WhatsApp Templates", current_template_name)
-    shape_error = _check_template_shape(template, current_template_name,
-                                        current_automation_type)
+    param_rows = (param_mapping or {}).get(current_template_name, [])
+    shape_error = _check_template_shape(
+        template, current_template_name, current_automation_type,
+        has_body_param_mapping=bool(param_rows),
+    )
     if shape_error:
         frappe.log_error(
             _(
@@ -895,6 +966,22 @@ def _retry_stale_claim(
         )
         _mark_log_skipped(log_name)
         return
+
+    # 4a. Resolve body parameters for parameterised templates.
+    body_param: str | None = None
+    if param_rows:
+        body_param, param_error = _build_body_param_for_send(
+            template, contact_number, param_rows
+        )
+        if param_error:
+            frappe.log_error(
+                _(
+                    "Hour-23 recovery: {0}. Skipping anchor {1}."
+                ).format(param_error, anchor_message),
+                "WhatsApp Hour-23 Automation",
+            )
+            _mark_log_skipped(log_name)
+            return
 
     # 5. Send.  Transient failure here propagates to the caller; the row
     #    stays Pending with the current lease and is retried next run.
@@ -910,6 +997,7 @@ def _retry_stale_claim(
             "whatsapp_account": whatsapp_account,
             "reference_doctype": "WhatsApp Hour 23 Automation Log",
             "reference_name": log_name,
+            "body_param": body_param,
         }
     )
     msg_doc.insert(ignore_permissions=True)
