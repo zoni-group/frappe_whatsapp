@@ -450,31 +450,41 @@ class WhatsAppMessage(Document):
             },
         }
 
-        if template.sample_values:
-            field_names = (template.field_names.split(",")
-                           if template.field_names else
-                           template.sample_values.split(","))
+        # body_param is the authoritative trigger for hour-23 parameterized
+        # sends.  It is computed ahead of time by build_hour_23_body_params()
+        # and set on the message document before send_template() is called.
+        # sample_values is not required for hour-23 sends and may be blank
+        # after a Meta sync; body_param alone is sufficient.
+        # sample_values also triggers this block for the ref-doc send path.
+        if self.body_param is not None or template.sample_values:
             parameters = []
             template_parameters = []
 
             if self.body_param is not None:
+                # Hour-23 path: ordered param values pre-resolved by
+                # build_hour_23_body_params(); use them directly.
                 params = list(json.loads(self.body_param).values())
                 for param in params:
                     parameters.append({"type": "text", "text": param})
                     template_parameters.append(param)
             elif self.flags.custom_ref_doc:
+                field_names = (template.field_names.split(",")
+                               if template.field_names else
+                               template.sample_values.split(","))
                 custom_values = self.flags.custom_ref_doc
                 for field_name in field_names:
                     value = custom_values.get(field_name.strip())
                     parameters.append({"type": "text", "text": value})
                     template_parameters.append(value)
-
             else:
                 if not (self.reference_doctype and self.reference_name):
                     frappe.throw(
                         _("Reference Doctype and Reference Name are required"
                           " to fetch template parameters"))
                     return
+                field_names = (template.field_names.split(",")
+                               if template.field_names else
+                               template.sample_values.split(","))
                 ref_doc = frappe.get_doc(
                     self.reference_doctype, self.reference_name)
                 for field_name in field_names:

@@ -27,7 +27,12 @@
   "terms_of_service_url",
   "default_unsubscribe_text",
   "include_unsubscribe_in_marketing",
-  "consent_request_template_prefixes"
+  "consent_request_template_prefixes",
+  "hour_23_automation_section",
+  "enable_hour_23_follow_up",
+  "marketing_consent_category",
+  "hour_23_language_map",
+  "hour_23_template_parameters"
  ],
  "fields": [
   {
@@ -47,6 +52,7 @@
    "description": "Message sent after opt-out",
    "fieldname": "opt_out_confirmation_message",
    "fieldtype": "Small Text",
+   "in_list_view": 1,
    "label": "Opt-Out Confirmation Message"
   },
   {
@@ -177,13 +183,46 @@
    "fieldname": "consent_request_template_prefixes",
    "fieldtype": "Small Text",
    "label": "Consent Request Template Prefixes"
+  },
+  {
+   "fieldname": "hour_23_automation_section",
+   "fieldtype": "Section Break",
+   "label": "Hour-23 Follow-Up Automation"
+  },
+  {
+   "default": "0",
+   "description": "Send a consent or status follow-up template in the final hour of the service window.",
+   "fieldname": "enable_hour_23_follow_up",
+   "fieldtype": "Check",
+   "label": "Enable Hour-23 Follow-Up"
+  },
+  {
+   "description": "Optional: consent category used for marketing opt-in tracking. If set, category consent is checked instead of the master is_opted_in flag, and YES replies to the consent template grant category-level consent.",
+   "fieldname": "marketing_consent_category",
+   "fieldtype": "Link",
+   "label": "Marketing Consent Category",
+   "options": "WhatsApp Consent Category"
+  },
+  {
+   "description": "Per-language template mapping. The 'en' row is the English fallback used when the contact's language is unknown or unmapped.",
+   "fieldname": "hour_23_language_map",
+   "fieldtype": "Table",
+   "label": "Language Map",
+   "options": "WhatsApp Hour 23 Language Map"
+  },
+  {
+   "description": "Body-parameter mapping for parameterized hour-23 templates. Rows are keyed by template and ordered by parameter_index.",
+   "fieldname": "hour_23_template_parameters",
+   "fieldtype": "Table",
+   "label": "Template Parameter Mapping",
+   "options": "WhatsApp Hour 23 Template Parameter"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-03-25 16:38:17.283551",
+ "modified": "2026-04-02 12:30:54.087220",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Compliance Settings",
