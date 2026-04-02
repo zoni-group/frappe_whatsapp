@@ -52,6 +52,7 @@
    "description": "Message sent after opt-out",
    "fieldname": "opt_out_confirmation_message",
    "fieldtype": "Small Text",
+   "in_list_view": 1,
    "label": "Opt-Out Confirmation Message"
   },
   {
@@ -221,7 +222,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-03-26 16:38:17.283551",
+ "modified": "2026-04-02 12:30:54.087220",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Compliance Settings",

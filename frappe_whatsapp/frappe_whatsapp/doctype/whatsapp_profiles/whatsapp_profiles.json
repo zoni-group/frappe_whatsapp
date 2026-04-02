@@ -201,7 +201,6 @@
    "description": "ISO 639-1 code of the detected language (e.g. en, es, pt)",
    "fieldname": "detected_language",
    "fieldtype": "Data",
-   "in_list_view": 0,
    "label": "Detected Language Code"
   },
   {
@@ -215,7 +214,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Confidence score from the language detector (0–1)",
+   "description": "Confidence score from the language detector (0\u20131)",
    "fieldname": "language_detection_confidence",
    "fieldtype": "Float",
    "label": "Detection Confidence",
@@ -261,7 +260,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-03-31 16:46:58.115766",
+ "modified": "2026-04-02 12:36:43.691026",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Profiles",

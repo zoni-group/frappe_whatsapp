@@ -14,16 +14,22 @@ class WhatsAppComplianceSettings(Document):
 
 	if TYPE_CHECKING:
 		from frappe.types import DF
+		from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_hour_23_language_map.whatsapp_hour_23_language_map import WhatsAppHour23LanguageMap
+		from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_hour_23_template_parameter.whatsapp_hour_23_template_parameter import WhatsAppHour23TemplateParameter
 
 		allow_transactional_without_consent: DF.Check
 		consent_check_mode: DF.Literal["Strict", "Warning Only", "Disabled"]
 		consent_request_template_prefixes: DF.SmallText | None
 		default_unsubscribe_text: DF.SmallText | None
+		enable_hour_23_follow_up: DF.Check
 		enable_opt_in_detection: DF.Check
 		enable_opt_out_detection: DF.Check
 		enforce_24_hour_window: DF.Check
 		enforce_consent_check: DF.Check
+		hour_23_language_map: DF.Table[WhatsAppHour23LanguageMap]
+		hour_23_template_parameters: DF.Table[WhatsAppHour23TemplateParameter]
 		include_unsubscribe_in_marketing: DF.Check
+		marketing_consent_category: DF.Link | None
 		opt_in_confirmation_message: DF.SmallText | None
 		opt_in_keywords: DF.SmallText | None
 		opt_out_confirmation_message: DF.SmallText | None
