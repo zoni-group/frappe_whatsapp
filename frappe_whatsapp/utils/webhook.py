@@ -22,6 +22,54 @@ from frappe_whatsapp.utils.consent import (
 )
 
 
+MEDIA_EXTENSION_BY_MIME = {
+    "audio/aac": "aac",
+    "audio/amr": "amr",
+    "audio/mp4": "m4a",
+    "audio/mpeg": "mp3",
+    "audio/ogg": "ogg",
+    "audio/opus": "opus",
+    "audio/webm": "webm",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "video/mp4": "mp4",
+    "video/3gpp": "3gp",
+    "application/pdf": "pdf",
+}
+
+DEFAULT_MEDIA_EXTENSION_BY_TYPE = {
+    "audio": "ogg",
+    "document": "bin",
+    "image": "jpg",
+    "sticker": "webp",
+    "video": "mp4",
+}
+
+
+def normalize_media_mime_type(mime_type: str | None) -> str:
+    """Return a lower-case MIME value without parameters."""
+    if not mime_type:
+        return "application/octet-stream"
+
+    normalized = str(mime_type).split(";", 1)[0].strip().lower()
+    return normalized or "application/octet-stream"
+
+
+def get_media_file_extension(
+        mime_type: str | None, message_type: str | None = None) -> str:
+    normalized = normalize_media_mime_type(mime_type)
+    if normalized in MEDIA_EXTENSION_BY_MIME:
+        return MEDIA_EXTENSION_BY_MIME[normalized]
+
+    if "/" in normalized and normalized != "application/octet-stream":
+        suffix = normalized.split("/", 1)[1].split("+", 1)[0]
+        if suffix:
+            return suffix
+
+    return DEFAULT_MEDIA_EXTENSION_BY_TYPE.get(message_type or "", "bin")
+
+
 @frappe.whitelist(allow_guest=True)
 def webhook():
     """Meta webhook."""
@@ -384,7 +432,8 @@ def _process_incoming_message(
 
     elif message_type in ["image", "audio", "video", "document", "sticker"]:
         # Insert a stub message quickly, then download media async
-        caption_text = (message.get(message_type) or {}).get("caption", "")
+        media_payload = message.get(message_type) or {}
+        caption_text = media_payload.get("caption", "")
         msg_doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Incoming",
@@ -397,7 +446,14 @@ def _process_incoming_message(
             "profile_name": sender_profile_name,
             "whatsapp_account": whatsapp_account.name,
             "routed_app": routed_app,
-        }).insert(ignore_permissions=True)
+        })
+        if (
+            message_type == "audio"
+            and msg_doc.meta.has_field("is_voice_note")
+        ):
+            msg_doc.is_voice_note = 1 if media_payload.get("voice") else 0
+
+        msg_doc.insert(ignore_permissions=True)
 
         # Check for opt-out / opt-in keywords in caption (if any)
         _handle_consent_keywords(
@@ -417,7 +473,7 @@ def _process_incoming_message(
                 profile_name=sender_profile_name,
             )
 
-        media_id = (message.get(message_type) or {}).get("id")
+        media_id = media_payload.get("id")
         if media_id:
             frappe.enqueue(
                 "frappe_whatsapp.utils.webhook.download_and_attach_media",
@@ -807,15 +863,19 @@ def download_and_attach_media(
         media_data = r.json()
 
         media_url = media_data.get("url")
-        mime_type = media_data.get("mime_type") or "application/octet-stream"
-        file_extension = (mime_type.split("/")[-1] or "bin")
+        mime_type = normalize_media_mime_type(media_data.get("mime_type"))
+        file_extension = get_media_file_extension(
+            mime_type, message_type=message_type)
 
         # 2) Download content
         r2 = requests.get(media_url, headers=headers, timeout=60)
         r2.raise_for_status()
 
         file_data = r2.content
-        file_name = f"{frappe.generate_hash(length=10)}.{file_extension}"
+        file_name = (
+            f"whatsapp-{message_type}-"
+            f"{frappe.generate_hash(length=10)}.{file_extension}"
+        )
 
         # 3) Attach to WhatsApp Message
         from frappe.core.doctype.file.file import File
@@ -826,6 +886,7 @@ def download_and_attach_media(
             "attached_to_name": message_docname,
             "attached_to_field": "attach",
             "content": file_data,
+            "file_type": file_extension.upper(),
         }))
         file_doc.save(ignore_permissions=True)
 

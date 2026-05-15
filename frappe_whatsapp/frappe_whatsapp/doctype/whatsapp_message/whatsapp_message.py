@@ -1,12 +1,16 @@
 # Copyright (c) 2022, Shridhar Patil and contributors
 # For license information, please see license.txt
 import json
+import mimetypes
+import os
 import frappe
+import requests
 from frappe import _, throw
 from frappe.model.document import Document
 from frappe.integrations.utils import make_post_request
 from frappe.utils import get_url
 from typing import cast, Any
+from urllib.parse import unquote, urlparse
 from frappe_whatsapp.utils.routing import set_last_sender_app
 
 from frappe_whatsapp.utils import get_whatsapp_account, format_number
@@ -17,6 +21,21 @@ from frappe_whatsapp.utils.consent import (
     enforce_template_send_rules,
     get_compliance_settings,
 )
+
+
+AUDIO_UPLOAD_MIME_BY_EXTENSION = {
+    ".aac": "audio/aac",
+    ".amr": "audio/amr",
+    ".m4a": "audio/mp4",
+    ".mp3": "audio/mpeg",
+    # WhatsApp clients only recognize Ogg/Opus as a playable voice note when
+    # the MIME explicitly includes "codecs=opus". Stripping the parameter
+    # makes Meta accept the upload, but the recipient client then shows
+    # "This audio is no longer available" when they tap the bubble.
+    ".oga": "audio/ogg; codecs=opus",
+    ".ogg": "audio/ogg; codecs=opus",
+    ".opus": "audio/ogg; codecs=opus",
+}
 
 
 def _get_integration_request_json() -> dict:
@@ -34,6 +53,19 @@ def _get_integration_request_json() -> dict:
         return {}
 
     return data if isinstance(data, dict) else {}
+
+
+def _normalize_attachment_url(attach: str | None) -> str:
+    if not attach:
+        return ""
+
+    if attach.startswith(("http://", "https://")):
+        return attach
+
+    if attach.startswith("/"):
+        return f"{get_url()}{attach}"
+
+    return f"{get_url()}/{attach}"
 
 
 class WhatsAppMessage(Document):
@@ -63,6 +95,7 @@ class WhatsAppMessage(Document):
         is_opt_in_request: DF.Check
         is_opt_out_request: DF.Check
         is_reply: DF.Check
+        is_voice_note: DF.Check
         label: DF.Data | None
         message: DF.HTMLEditor | None
         message_id: DF.Data | None
@@ -207,6 +240,113 @@ class WhatsAppMessage(Document):
                 message_name=self.name,
             )
 
+    def _get_local_attachment_file(self):
+        if not self.attach or self.attach.startswith(("http://", "https://")):
+            return None
+
+        files = frappe.get_all(
+            "File",
+            filters={"file_url": self.attach},
+            fields=["name"],
+            order_by="creation desc",
+            limit=1,
+        )
+        if not files:
+            return None
+
+        return frappe.get_doc("File", files[0].name)
+
+    def _get_audio_upload_mime_type(self, file_doc=None) -> str:
+        file_name = (
+            str(file_doc.file_name)
+            if file_doc and file_doc.get("file_name")
+            else str(self.attach or "")
+        )
+        file_path = unquote(urlparse(file_name).path)
+        extension = os.path.splitext(file_path)[1].lower()
+
+        if extension in AUDIO_UPLOAD_MIME_BY_EXTENSION:
+            return AUDIO_UPLOAD_MIME_BY_EXTENSION[extension]
+
+        # Fallback: strip any parameters that mimetypes.guess_type may have
+        # appended; the curated AUDIO_UPLOAD_MIME_BY_EXTENSION above is the
+        # only place we deliberately keep "codecs=..." parameters.
+        guessed = mimetypes.guess_type(file_name)[0] or ""
+        return guessed.split(";")[0].strip() or "application/octet-stream"
+
+    def _upload_local_audio_to_whatsapp(self) -> str | None:
+        """Upload local audio bytes to Meta and return a WhatsApp media ID."""
+        file_doc = self._get_local_attachment_file()
+        if not file_doc:
+            return None
+
+        file_path = str(file_doc.get_full_path())
+        if file_path.startswith(("http://", "https://")):
+            return None
+
+        if not os.path.exists(file_path):
+            frappe.throw(
+                _("Audio attachment file was not found on disk."),
+                title=_("Audio Upload Failed"))
+
+        from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import WhatsAppAccount  # noqa: E501
+        whatsapp_account = cast(
+            WhatsAppAccount,
+            frappe.get_doc("WhatsApp Account", self.whatsapp_account))
+        token = whatsapp_account.get_password("token")
+        mime_type = self._get_audio_upload_mime_type(file_doc)
+        upload_url = (
+            f"{whatsapp_account.url}/{whatsapp_account.version}"
+            f"/{whatsapp_account.phone_id}/media"
+        )
+        file_name = file_doc.file_name or os.path.basename(file_path)
+
+        try:
+            with open(file_path, "rb") as audio_file:
+                response = requests.post(
+                    upload_url,
+                    headers={"authorization": f"Bearer {token}"},
+                    data={
+                        "messaging_product": "whatsapp",
+                        "type": mime_type,
+                    },
+                    files={
+                        "file": (file_name, audio_file, mime_type),
+                    },
+                    timeout=60,
+                )
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+        except Exception as e:
+            response_obj = getattr(e, "response", None)
+            response_text = getattr(response_obj, "text", None)
+            frappe.log_error(
+                {
+                    "error": str(e),
+                    "response_text": response_text,
+                    "upload_url": upload_url,
+                    "file_name": file_name,
+                    "mime_type": mime_type,
+                },
+                "WhatsApp audio media upload failed",
+            )
+            frappe.throw(
+                _("Failed to upload audio media to WhatsApp. {0}").format(
+                    response_text or str(e)),
+                title=_("Audio Upload Failed"))
+
+        media_id = payload.get("id") if isinstance(payload, dict) else None
+        if not media_id:
+            frappe.log_error(
+                {"response": payload, "upload_url": upload_url},
+                "WhatsApp audio media upload returned no media id",
+            )
+            frappe.throw(
+                _("WhatsApp did not return a media ID for this audio file."),
+                title=_("Audio Upload Failed"))
+
+        return str(media_id)
+
     """Send whats app messages."""
     def before_insert(self):
         """Send message."""
@@ -249,10 +389,7 @@ class WhatsAppMessage(Document):
                     )
 
         if self.type == "Outgoing" and self.message_type != "Template":
-            if self.attach and not self.attach.startswith("http"):
-                link = get_url() + "/" + self.attach
-            else:
-                link = self.attach
+            link = _normalize_attachment_url(self.attach)
 
             data: dict[str, Any] = {
                 "messaging_product": "whatsapp",
@@ -277,7 +414,16 @@ class WhatsAppMessage(Document):
                 data["text"] = {"preview_url": True, "body": self.message}
 
             elif self.content_type == "audio":
-                data["audio"] = {"link": link}
+                # Upload local audio first and send by Meta media ID. This
+                # avoids client-side playback failures caused by WhatsApp
+                # refetching a self-hosted URL with weak MIME/container
+                # metadata.
+                media_id = self._upload_local_audio_to_whatsapp()
+                data["audio"] = (
+                    {"id": media_id} if media_id else {"link": link}
+                )
+                if self.get("is_voice_note"):
+                    data["audio"]["voice"] = True
 
             elif self.content_type == "interactive":
                 # Interactive message (buttons or list)

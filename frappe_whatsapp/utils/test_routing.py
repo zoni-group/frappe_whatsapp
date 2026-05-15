@@ -9,7 +9,11 @@ from frappe_whatsapp.utils.routing import (
     resolve_incoming_routed_app,
     serialize_incoming_message_for_forwarding,
 )
-from frappe_whatsapp.utils.webhook import _process_incoming_message
+from frappe_whatsapp.utils.webhook import (
+    _process_incoming_message,
+    get_media_file_extension,
+    normalize_media_mime_type,
+)
 
 
 class TestRouting(FrappeTestCase):
@@ -257,3 +261,117 @@ class TestRouting(FrappeTestCase):
             enqueue_after_commit=True,
         )
         mock_forward_async.assert_not_called()
+
+    @patch("frappe_whatsapp.utils.webhook._handle_consent_keywords")
+    @patch("frappe_whatsapp.utils.webhook.forward_incoming_to_app_async")
+    @patch("frappe_whatsapp.utils.webhook.frappe.enqueue")
+    def test_process_incoming_audio_voice_note_enqueues_media_download(
+        self,
+        mock_enqueue,
+        mock_forward_async,
+        _mock_handle_consent_keywords,
+    ):
+        frappe.reload_doc("frappe_whatsapp", "doctype", "whatsapp_message")
+        app = self._create_client_app()
+        account = self._create_account(whatsapp_client_app=app.name)
+        message_id = f"wamid.{frappe.generate_hash(length=8)}"
+        media_id = frappe.generate_hash(length=12)
+
+        _process_incoming_message(
+            message={
+                "id": message_id,
+                "from": "+15551234567",
+                "type": "audio",
+                "audio": {
+                    "id": media_id,
+                    "mime_type": "audio/ogg; codecs=opus",
+                    "voice": True,
+                },
+            },
+            whatsapp_account=account,
+            sender_profile_name="Jane Sender",
+        )
+
+        doc_name = frappe.db.get_value(
+            "WhatsApp Message",
+            {"message_id": message_id},
+            "name",
+        )
+        self.assertTrue(doc_name)
+
+        message_doc = frappe.get_doc("WhatsApp Message", doc_name)
+        self.assertEqual(message_doc.content_type, "audio")
+        self.assertEqual(message_doc.message, "")
+        if message_doc.meta.has_field("is_voice_note"):
+            self.assertEqual(message_doc.is_voice_note, 1)
+
+        mock_enqueue.assert_called_once_with(
+            "frappe_whatsapp.utils.webhook.download_and_attach_media",
+            queue="long",
+            whatsapp_account_name=account.name,
+            message_docname=message_doc.name,
+            media_id=media_id,
+            message_type="audio",
+            enqueue_after_commit=True,
+        )
+        mock_forward_async.assert_not_called()
+
+    @patch("frappe_whatsapp.utils.webhook.frappe.enqueue")
+    def test_duplicate_media_message_id_prevents_duplicate_insert(
+        self,
+        mock_enqueue,
+    ):
+        frappe.reload_doc("frappe_whatsapp", "doctype", "whatsapp_message")
+        account = self._create_account()
+        message_id = f"wamid.{frappe.generate_hash(length=8)}"
+
+        frappe.get_doc({
+            "doctype": "WhatsApp Message",
+            "type": "Incoming",
+            "from": "+15551234567",
+            "message_id": message_id,
+            "message": "",
+            "content_type": "audio",
+            "whatsapp_account": account.name,
+        }).insert(ignore_permissions=True)
+
+        _process_incoming_message(
+            message={
+                "id": message_id,
+                "from": "+15551234567",
+                "type": "audio",
+                "audio": {
+                    "id": frappe.generate_hash(length=12),
+                    "mime_type": "audio/ogg; codecs=opus",
+                    "voice": True,
+                },
+            },
+            whatsapp_account=account,
+            sender_profile_name="Jane Sender",
+        )
+
+        self.assertEqual(
+            frappe.db.count(
+                "WhatsApp Message",
+                filters={"message_id": message_id},
+            ),
+            1,
+        )
+        mock_enqueue.assert_not_called()
+
+    def test_media_file_extension_normalizes_mime_parameters(self):
+        self.assertEqual(
+            normalize_media_mime_type("audio/ogg; codecs=opus"),
+            "audio/ogg",
+        )
+        self.assertEqual(
+            get_media_file_extension(
+                "audio/ogg; codecs=opus",
+                message_type="audio",
+            ),
+            "ogg",
+        )
+        self.assertEqual(
+            get_media_file_extension("audio/mp4", message_type="audio"),
+            "m4a",
+        )
