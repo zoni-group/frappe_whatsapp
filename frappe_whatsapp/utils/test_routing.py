@@ -303,7 +303,7 @@ class TestRouting(FrappeTestCase):
         self.assertEqual(message_doc.content_type, "audio")
         self.assertEqual(message_doc.message, "")
         if message_doc.meta.has_field("is_voice_note"):
-            self.assertEqual(message_doc.is_voice_note, 1)
+            self.assertEqual(message_doc.get("is_voice_note"), 1)
 
         mock_enqueue.assert_called_once_with(
             "frappe_whatsapp.utils.webhook.download_and_attach_media",

@@ -451,7 +451,10 @@ def _process_incoming_message(
             message_type == "audio"
             and msg_doc.meta.has_field("is_voice_note")
         ):
-            msg_doc.is_voice_note = 1 if media_payload.get("voice") else 0
+            msg_doc.set(
+                "is_voice_note",
+                1 if media_payload.get("voice") else 0,
+            )
 
         msg_doc.insert(ignore_permissions=True)
 

@@ -36,6 +36,7 @@ AUDIO_UPLOAD_MIME_BY_EXTENSION = {
     ".ogg": "audio/ogg; codecs=opus",
     ".opus": "audio/ogg; codecs=opus",
 }
+MAX_AUDIO_UPLOAD_BYTES = 16 * 1024 * 1024
 
 
 def _get_integration_request_json() -> dict:
@@ -289,12 +290,26 @@ class WhatsAppMessage(Document):
                 _("Audio attachment file was not found on disk."),
                 title=_("Audio Upload Failed"))
 
+        if os.path.getsize(file_path) > MAX_AUDIO_UPLOAD_BYTES:
+            frappe.throw(
+                _("Audio files must be 16 MB or smaller."),
+                title=_("Audio Upload Failed"))
+
+        mime_type = self._get_audio_upload_mime_type(file_doc)
+        if (
+            self.get("is_voice_note")
+            and mime_type != "audio/ogg; codecs=opus"
+        ):
+            frappe.throw(
+                _("Voice notes must be Ogg/Opus files with a .ogg, .oga, "
+                  "or .opus extension."),
+                title=_("Unsupported Voice Note Format"))
+
         from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import WhatsAppAccount  # noqa: E501
         whatsapp_account = cast(
             WhatsAppAccount,
             frappe.get_doc("WhatsApp Account", self.whatsapp_account))
         token = whatsapp_account.get_password("token")
-        mime_type = self._get_audio_upload_mime_type(file_doc)
         upload_url = (
             f"{whatsapp_account.url}/{whatsapp_account.version}"
             f"/{whatsapp_account.phone_id}/media"
@@ -419,6 +434,13 @@ class WhatsAppMessage(Document):
                 # refetching a self-hosted URL with weak MIME/container
                 # metadata.
                 media_id = self._upload_local_audio_to_whatsapp()
+                if self.get("is_voice_note") and not media_id:
+                    frappe.throw(
+                        _("Voice notes must use a local Frappe File "
+                          "attachment so it can be uploaded to WhatsApp "
+                          "before sending."),
+                        title=_("Unsupported Voice Note Attachment"),
+                    )
                 data["audio"] = (
                     {"id": media_id} if media_id else {"link": link}
                 )

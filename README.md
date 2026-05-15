@@ -114,6 +114,17 @@ Send messages without templates (within 24-hour window):
 
 ![Direct Message](https://user-images.githubusercontent.com/11792643/211518862-de2d3fbc-69c8-48e1-b000-8eebf20b75ab.png)
 
+### Voice Notes
+
+Client apps can create outgoing WhatsApp voice notes directly through the
+`WhatsApp Message` DocType. For iPhone-compatible playback, attach a local
+Frappe `File` containing Ogg/Opus audio, set `content_type = "audio"`, set
+`is_voice_note = 1`, and leave `message` empty unless you intentionally want a
+caption.
+
+See [docs/voice-notes.md](docs/voice-notes.md) for the exact format
+requirements, a Python example, and a detailed NextJS/Frappe REST API example.
+
 ### Interactive Messages
 
 Send interactive button and list messages for quick user responses.
