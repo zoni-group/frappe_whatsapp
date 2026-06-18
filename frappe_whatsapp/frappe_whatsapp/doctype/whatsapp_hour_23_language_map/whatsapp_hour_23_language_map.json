@@ -1,0 +1,53 @@
+{
+ "actions": [],
+ "creation": "2026-04-01 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "language_code",
+  "consent_template",
+  "status_follow_up_template"
+ ],
+ "fields": [
+  {
+   "description": "ISO 639-1 language code (e.g. en, es, pt). The 'en' row is the fallback.",
+   "fieldname": "language_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Language Code",
+   "reqd": 1
+  },
+  {
+   "description": "Template sent when marketing consent is unknown. Must be a consent-request template.",
+   "fieldname": "consent_template",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Consent Template",
+   "options": "WhatsApp Templates"
+  },
+  {
+   "description": "Template sent when marketing consent is already confirmed.",
+   "fieldname": "status_follow_up_template",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Status Follow-Up Template",
+   "options": "WhatsApp Templates"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-04-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Frappe Whatsapp",
+ "name": "WhatsApp Hour 23 Language Map",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

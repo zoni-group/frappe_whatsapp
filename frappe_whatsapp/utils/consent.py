@@ -658,6 +658,68 @@ def _log_consent(
     }).insert(ignore_permissions=True)
 
 
+def process_category_opt_in(
+        *,
+        contact_number: str,
+        whatsapp_account: str,
+        consent_category: str,
+        message_doc_name: str | None = None,
+        profile_name: str | None = None,
+) -> None:
+    """Grant category-level consent and create an audit log entry.
+
+    Finds or creates the ``WhatsApp Profile Consent`` row for
+    ``consent_category`` and marks it consented.  Updates the overall
+    ``consent_status`` to "Partial" when the profile does not yet have
+    full master opt-in so downstream code can distinguish the two states.
+    """
+    profile_id = _get_or_create_profile(
+        contact_number, whatsapp_account, profile_name)
+    from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_profiles.whatsapp_profiles import WhatsAppProfiles  # noqa: E501
+    profile = cast(
+        WhatsAppProfiles,
+        frappe.get_doc("WhatsApp Profiles", profile_id))
+
+    category_row = None
+    for row in (profile.get("category_consents") or []):
+        if row.consent_category == consent_category:
+            category_row = row
+            break
+
+    previous_status = False
+    if category_row:
+        previous_status = bool(category_row.consented)
+        category_row.consented = 1
+        category_row.consented_at = now_datetime()
+        category_row.consent_method = "WhatsApp Reply"
+    else:
+        profile.append(
+            "category_consents",
+            {
+                "consent_category": consent_category,
+                "consented": 1,
+                "consented_at": now_datetime(),
+                "consent_method": "WhatsApp Reply",
+            },
+        )
+
+    if not profile.is_opted_in:
+        profile.consent_status = "Partial"
+
+    profile.save(ignore_permissions=True)
+
+    _log_consent(
+        profile=profile_id,
+        phone_number=format_number(contact_number),
+        action_type="Category Opt-In",
+        consent_category=consent_category,
+        previous_status=previous_status,
+        new_status=True,
+        source="Webhook",
+        source_message=message_doc_name,
+    )
+
+
 def enforce_marketing_template_compliance(template) -> None:
     """Block sending marketing templates without unsubscribe instructions.
 

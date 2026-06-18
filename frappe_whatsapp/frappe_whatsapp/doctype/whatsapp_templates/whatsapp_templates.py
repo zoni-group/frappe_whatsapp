@@ -719,6 +719,18 @@ def fetch() -> str:
                 doc.category = cast(Any, cat)
 
                 # components
+                # Pre-reset component-owned fields.  An existing template
+                # may have carried HEADER, FOOTER, BODY parameters, or
+                # BUTTONS from an earlier sync.  If Meta has since removed
+                # any of those components the fields must be cleared *before*
+                # rebuilding from the current payload so stale data does not
+                # survive into the next upsert.
+                doc.header_type = cast(Any, "")
+                doc.header = None
+                doc.footer = None
+                doc.sample_values = None
+                doc.set("buttons", [])
+
                 components = _as_list(template.get("components"))
                 for c in components:
                     component = _as_dict(c)
@@ -797,6 +809,7 @@ def fetch() -> str:
 
                 _derive_sync_compliance(doc, is_new=(existing_name is None))
                 upsert_doc_without_hooks(doc, "WhatsApp Button", "buttons")
+                _check_hour_23_drift_after_sync(doc)
 
         except Exception as e:
             err = _get_integration_error()
@@ -806,6 +819,39 @@ def fetch() -> str:
             frappe.throw(msg=msg, title=title)
 
     return "Successfully fetched templates from meta"
+
+
+def _check_hour_23_drift_after_sync(doc: "WhatsAppTemplates") -> None:
+    """Log hour-23 configuration drift after a Meta template sync.
+
+    Called **after** ``upsert_doc_without_hooks()`` so that ``doc.name``
+    is the final durable document name.  Hour-23 settings link fields
+    (``hour_23_language_map`` and ``hour_23_template_parameters``) store
+    the ``WhatsApp Templates`` document name, not ``actual_name``, so the
+    lookup key passed to ``get_hour_23_drift_messages`` must be ``doc.name``
+    (e.g. ``"CONSENT-TMPL-en"``).  ``actual_name`` is preserved only for
+    human-readable log context.
+
+    Chosen behaviour: **log, not block**.
+    Blocking would reject status/approval updates for all templates in a
+    sync batch whenever any single template drifts; that is worse than
+    the drift itself.  The existing param-error path in the automation
+    (``_mark_log_skipped``) still prevents bad sends — the log gives
+    operators early warning to fix the mapping before sends are attempted.
+    """
+    from frappe_whatsapp.utils.hour_23_params import count_declared_meta_params
+    from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_compliance_settings\
+        .whatsapp_compliance_settings import get_hour_23_drift_messages
+
+    # doc.name is the authoritative document identifier (e.g. CONSENT-TMPL-en).
+    # Settings link fields store this value, not actual_name.
+    doc_name = str(doc.name or "").strip()
+    if not doc_name:
+        return
+
+    declared_params = count_declared_meta_params(doc)
+    for msg in get_hour_23_drift_messages(doc_name, declared_params):
+        frappe.log_error(msg, "WhatsApp Hour-23 Automation")
 
 
 def upsert_doc_without_hooks(doc, child_dt, child_field):

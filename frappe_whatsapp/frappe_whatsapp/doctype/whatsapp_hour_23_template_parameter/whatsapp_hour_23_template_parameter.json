@@ -1,0 +1,71 @@
+{
+ "actions": [],
+ "creation": "2026-04-01 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "template",
+  "parameter_index",
+  "source_type",
+  "source_field",
+  "literal_value",
+  "fallback_value"
+ ],
+ "fields": [
+  {
+   "fieldname": "template",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Template",
+   "options": "WhatsApp Templates",
+   "reqd": 1
+  },
+  {
+   "description": "1-based placeholder position: {{1}}, {{2}}, ...",
+   "fieldname": "parameter_index",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Parameter Index",
+   "reqd": 1
+  },
+  {
+   "fieldname": "source_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Source Type",
+   "options": "First Name\nProfile Field\nContact Field\nLiteral",
+   "reqd": 1
+  },
+  {
+   "description": "Field name on WhatsApp Profiles (Profile Field) or Contact (Contact Field)",
+   "fieldname": "source_field",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Source Field"
+  },
+  {
+   "description": "Fixed text used when source_type is Literal",
+   "fieldname": "literal_value",
+   "fieldtype": "Data",
+   "label": "Literal Value"
+  },
+  {
+   "description": "Used when the resolved value is blank",
+   "fieldname": "fallback_value",
+   "fieldtype": "Data",
+   "label": "Fallback Value"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-04-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Frappe Whatsapp",
+ "name": "WhatsApp Hour 23 Template Parameter",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
