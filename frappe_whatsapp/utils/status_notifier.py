@@ -70,6 +70,7 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_client_app.whatsapp_client_app import (  # noqa: E501
@@ -86,11 +87,26 @@ from frappe.utils import add_to_date, now_datetime
 STATUS_WEBHOOK_LOG_DOCTYPE = "WhatsApp Status Webhook Log"
 
 # Cease retrying after this many total delivery attempts (initial + retries).
-MAX_RETRY_ATTEMPTS = 5
+MAX_RETRY_ATTEMPTS = 6
 
-# Hours to wait before each successive retry (indexed by attempt number).
-# Attempt 1 is the initial enqueue; retries start from attempt 2.
-_RETRY_BACKOFF_HOURS = [0, 1, 2, 4, 8]
+# Minutes to wait after each failed attempt before the next retry.
+# Attempt 6 is terminal and does not receive another next_retry_at.
+_RETRY_BACKOFF_MINUTES = [5, 15, 60, 240, 480]
+
+# Keep the existing request timeout policy for v1 of the retry/logging change.
+_STATUS_WEBHOOK_TIMEOUT_SECONDS = 10
+
+_RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 429})
+_INVALID_WEBHOOK_URL_EXCEPTIONS = (
+    requests.exceptions.MissingSchema,
+    requests.exceptions.InvalidSchema,
+    requests.exceptions.InvalidURL,
+)
+_RETRYABLE_REQUEST_EXCEPTIONS = (
+    requests.exceptions.Timeout,
+    requests.exceptions.ConnectionError,
+    ConnectionError,
+)
 
 # Minutes after log creation before the scheduler treats a Pending row as
 # stale and eligible for recovery.  Covers the case where the initial
@@ -129,6 +145,73 @@ def _normalize_status(raw: str | None) -> str:
     if not raw:
         return "unknown"
     return _NORMALIZE_MAP.get(raw.lower(), raw.lower())
+
+
+def _next_retry_at_for_attempt(attempts: int) -> Any | None:
+    """Return the retry time after a failed attempt, or None if exhausted."""
+    if attempts >= MAX_RETRY_ATTEMPTS:
+        return None
+
+    idx = min(max(attempts - 1, 0), len(_RETRY_BACKOFF_MINUTES) - 1)
+    return add_to_date(now_datetime(), minutes=_RETRY_BACKOFF_MINUTES[idx])
+
+
+def _is_retryable_http_status(status_code: int | None) -> bool:
+    """Return True when an HTTP response should be retried."""
+    if status_code is None:
+        return False
+    return status_code in _RETRYABLE_HTTP_STATUS_CODES or status_code >= 500
+
+
+def _get_url_host(url: str | None) -> str:
+    """Return a hostname for compact delivery-error messages."""
+    try:
+        parsed = urlparse(str(url or ""))
+    except Exception:
+        return ""
+    return parsed.hostname or parsed.netloc or ""
+
+
+def _shorten(value: str | None, limit: int = 180) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit - 3]}..."
+
+
+def _format_delivery_exception(exc: Exception, url: str | None) -> str:
+    """Return a concise operator-facing delivery error."""
+    exc_name = exc.__class__.__name__
+    host = _get_url_host(url)
+    host_label = f"host {host}" if host else "configured webhook host"
+
+    if isinstance(exc, requests.exceptions.Timeout):
+        return (
+            f"{exc_name}: {host_label} did not respond within "
+            f"{_STATUS_WEBHOOK_TIMEOUT_SECONDS}s"
+        )
+
+    if isinstance(exc, (requests.exceptions.ConnectionError, ConnectionError)):
+        detail = _shorten(str(exc))
+        suffix = f": {detail}" if detail else ""
+        return f"{exc_name}: could not reach {host_label}{suffix}"
+
+    if isinstance(exc, _INVALID_WEBHOOK_URL_EXCEPTIONS):
+        return (
+            f"{exc_name}: invalid status_webhook_url "
+            f"{_shorten(str(url or ''), 120)!r}"
+        )
+
+    detail = _shorten(str(exc))
+    return f"{exc_name}: {detail}" if detail else exc_name
+
+
+def _log_status_delivery_failure(log_name: str, error: str) -> None:
+    """Write one actionable Error Log for terminal delivery failures."""
+    frappe.log_error(
+        f"Status webhook delivery failed for log {log_name}: {error}",
+        f"WhatsApp Status Notifier failure for log {log_name}",
+    )
 
 
 def _get_last_sql_row_count() -> int:
@@ -343,7 +426,7 @@ def _create_log_if_new(
             "payload": json.dumps(payload),
             "attempts": 0,
             # Recovery deadline: if the initial enqueue_after_commit job is
-            # lost (worker crash, Redis restart), the hourly scheduler will
+            # lost (worker crash, Redis restart), the scheduler will
             # re-enqueue this row once next_retry_at is in the past.
             "next_retry_at": add_to_date(
                 now_datetime(), minutes=PENDING_RECOVERY_MINUTES
@@ -429,6 +512,7 @@ def deliver_status_notification(log_name: str) -> None:
         " SET `delivery_status` = 'Processing',"
         "     `claim_expires_at` = %s"
         " WHERE `name` = %s"
+        " AND IFNULL(`attempts`, 0) < %s"
         " AND ("
         "   `delivery_status` IN ('Pending', 'Failed')"
         "   OR ("
@@ -436,7 +520,7 @@ def deliver_status_notification(log_name: str) -> None:
         "     AND (`claim_expires_at` IS NULL OR `claim_expires_at` <= %s)"
         "   )"
         " )",
-        [claim_expires, log_name, now_ts],
+        [claim_expires, log_name, MAX_RETRY_ATTEMPTS, now_ts],
     )
     claimed = _get_last_sql_row_count()
     # Commit immediately: releases the lock before the blocking HTTP call
@@ -469,26 +553,37 @@ def deliver_status_notification(log_name: str) -> None:
         else (log.payload or {})
     )
     new_attempts = (log.attempts or 0) + 1
-    backoff_idx = min(new_attempts, len(_RETRY_BACKOFF_HOURS) - 1)
-    backoff_hours = _RETRY_BACKOFF_HOURS[backoff_idx]
+    webhook_url = str(app_doc.status_webhook_url or "")
 
     try:
         resp = requests.post(
-            app_doc.status_webhook_url,
+            webhook_url,
             json=payload,
             headers={
                 "Content-Type": "application/json",
                 "X-WhatsApp-App-ID": getattr(app_doc, "app_id", None) or "",
                 "X-Event-ID": log.event_id or "",
             },
-            timeout=10,
+            timeout=_STATUS_WEBHOOK_TIMEOUT_SECONDS,
         )
 
         success = resp.ok
+        retryable = _is_retryable_http_status(resp.status_code)
+        exhausted = new_attempts >= MAX_RETRY_ATTEMPTS
         next_retry = (
             None
+            if success or exhausted or not retryable
+            else _next_retry_at_for_attempt(new_attempts)
+        )
+        error = (
+            ""
             if success
-            else add_to_date(now_datetime(), hours=backoff_hours)
+            else f"HTTP {resp.status_code}: {(resp.text or '')[:100]}"
+        )
+        stored_attempts = (
+            new_attempts
+            if success or retryable
+            else MAX_RETRY_ATTEMPTS
         )
 
         frappe.db.set_value(
@@ -496,15 +591,11 @@ def deliver_status_notification(log_name: str) -> None:
             log_name,
             {
                 "delivery_status": "Delivered" if success else "Failed",
-                "attempts": new_attempts,
+                "attempts": stored_attempts,
                 "last_attempted_at": now_datetime(),
                 "response_code": str(resp.status_code),
                 "response_body": (resp.text or "")[:500],
-                "error": (
-                    ""
-                    if success
-                    else f"HTTP {resp.status_code}: {(resp.text or '')[:100]}"
-                ),
+                "error": error,
                 "next_retry_at": next_retry,
                 # Lease is released — claim_expires_at only means something
                 # while the row is in Processing state.
@@ -512,39 +603,57 @@ def deliver_status_notification(log_name: str) -> None:
             },
         )
 
-        if not success:
-            frappe.log_error(
-                (
-                    f"Status webhook POST failed for log {log_name}: "
-                    f"HTTP {resp.status_code}\n{resp.text[:200]}"
-                ),
-                "WhatsApp Status Notifier",
-            )
+        if not success and (exhausted or not retryable):
+            _log_status_delivery_failure(log_name, error)
 
-    except Exception:
-        next_retry = add_to_date(now_datetime(), hours=backoff_hours)
+    except Exception as exc:
+        invalid_url = isinstance(exc, _INVALID_WEBHOOK_URL_EXCEPTIONS)
+        retryable = (
+            not invalid_url
+            and isinstance(exc, _RETRYABLE_REQUEST_EXCEPTIONS)
+        )
+        exhausted = new_attempts >= MAX_RETRY_ATTEMPTS
+        should_stop = invalid_url or not retryable or exhausted
+        next_retry = (
+            None
+            if should_stop
+            else _next_retry_at_for_attempt(new_attempts)
+        )
+        error = _format_delivery_exception(exc, webhook_url)
+        stored_attempts = (
+            new_attempts
+            if retryable and not invalid_url
+            else MAX_RETRY_ATTEMPTS
+        )
         frappe.db.set_value(
             STATUS_WEBHOOK_LOG_DOCTYPE,
             log_name,
             {
                 "delivery_status": "Failed",
-                "attempts": new_attempts,
+                "attempts": stored_attempts,
                 "last_attempted_at": now_datetime(),
-                "error": frappe.get_traceback()[:200],
+                "response_code": "",
+                "response_body": "",
+                "error": error,
                 "next_retry_at": next_retry,
                 "claim_expires_at": None,
             },
         )
-        frappe.log_error(
-            frappe.get_traceback(),
-            f"WhatsApp Status Notifier exception for log {log_name}",
-        )
+        if should_stop:
+            if retryable or invalid_url:
+                _log_status_delivery_failure(log_name, error)
+            else:
+                frappe.log_error(
+                    frappe.get_traceback(),
+                    f"WhatsApp Status Notifier exception for log {log_name}",
+                )
 
 
 def retry_failed_status_notifications() -> None:
     """Scheduled task: re-enqueue overdue and stale-claimed deliveries.
 
-    Runs hourly.  Handles three recovery cases:
+    Runs frequently via the ``all`` scheduler event. Handles three recovery
+    cases:
 
     1. Failed rows due for retry
        delivery_status=Failed, attempts < MAX, next_retry_at past/unset.

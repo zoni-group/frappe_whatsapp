@@ -122,12 +122,12 @@ after_migrate = [
 
 scheduler_events = {
     "all": [
-        "frappe_whatsapp.utils.trigger_whatsapp_notifications_all"
+        "frappe_whatsapp.utils.trigger_whatsapp_notifications_all",
+        ("frappe_whatsapp.utils.status_notifier"
+         ".retry_failed_status_notifications"),
     ],
     "hourly": [
         "frappe_whatsapp.utils.trigger_whatsapp_notifications_hourly",
-        ("frappe_whatsapp.utils.status_notifier"
-         ".retry_failed_status_notifications"),
     ],
     "hourly_long": [
         "frappe_whatsapp.utils.trigger_whatsapp_notifications_hourly_long"

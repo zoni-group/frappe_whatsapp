@@ -13,10 +13,12 @@ Strategy
   rather than enqueue invocations.
 """
 import json
+from datetime import datetime
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, call, patch
 
 import frappe
+import requests
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_to_date, now_datetime
 
@@ -632,8 +634,11 @@ class TestDeliverStatusNotification(FrappeTestCase):
         self.assertFalse(log.error)
         self.assertIsNone(log.next_retry_at)
 
+    @patch("frappe_whatsapp.utils.status_notifier.frappe.log_error")
     @patch("frappe_whatsapp.utils.status_notifier.requests.post")
-    def test_failed_http_marks_log_failed(self, mock_post):
+    def test_retryable_http_marks_log_failed_without_error_log(
+        self, mock_post, mock_log_error
+    ):
         mock_post.return_value = MagicMock(
             ok=False, status_code=500, text="Internal Server Error"
         )
@@ -647,10 +652,16 @@ class TestDeliverStatusNotification(FrappeTestCase):
         self.assertEqual(log.attempts, 1)
         self.assertIn("500", str(log.error))
         self.assertIsNotNone(log.next_retry_at)
+        mock_log_error.assert_not_called()
 
+    @patch("frappe_whatsapp.utils.status_notifier.frappe.log_error")
     @patch("frappe_whatsapp.utils.status_notifier.requests.post")
-    def test_network_exception_marks_log_failed(self, mock_post):
-        mock_post.side_effect = ConnectionError("unreachable")
+    def test_read_timeout_marks_log_failed_with_fast_retry(
+        self, mock_post, mock_log_error
+    ):
+        mock_post.side_effect = requests.exceptions.ReadTimeout(
+            "read timed out"
+        )
 
         log = self._log()
         deliver_status_notification(str(log.name))
@@ -658,8 +669,88 @@ class TestDeliverStatusNotification(FrappeTestCase):
         log.reload()
         self.assertEqual(log.delivery_status, "Failed")
         self.assertEqual(log.attempts, 1)
-        self.assertTrue(log.error)
+        self.assertIn("ReadTimeout", str(log.error))
+        self.assertIn("did not respond within 10s", str(log.error))
         self.assertIsNotNone(log.next_retry_at)
+        next_retry_at = cast(datetime, log.next_retry_at)
+        lower_bound = cast(datetime, add_to_date(now_datetime(), minutes=4))
+        upper_bound = cast(datetime, add_to_date(now_datetime(), minutes=6))
+        self.assertGreaterEqual(next_retry_at, lower_bound)
+        self.assertLessEqual(next_retry_at, upper_bound)
+        mock_log_error.assert_not_called()
+
+    @patch("frappe_whatsapp.utils.status_notifier.requests.post")
+    def test_retry_success_clears_previous_timeout_error(self, mock_post):
+        mock_post.return_value = MagicMock(ok=True, status_code=200, text="")
+
+        log = self._log(
+            delivery_status="Failed",
+            attempts=1,
+            next_retry_at=add_to_date(now_datetime(), minutes=-1),
+        )
+        frappe.db.set_value(
+            STATUS_WEBHOOK_LOG_DOCTYPE,
+            log.name,
+            "error",
+            "ReadTimeout: host example.com did not respond within 10s",
+        )
+
+        deliver_status_notification(str(log.name))
+
+        log.reload()
+        self.assertEqual(log.delivery_status, "Delivered")
+        self.assertEqual(log.attempts, 2)
+        self.assertFalse(log.error)
+        self.assertIsNone(log.next_retry_at)
+        self.assertEqual(log.response_code, "200")
+
+    @patch("frappe_whatsapp.utils.status_notifier.frappe.log_error")
+    @patch("frappe_whatsapp.utils.status_notifier.requests.post")
+    def test_exhausted_retryable_exception_logs_once(
+        self, mock_post, mock_log_error
+    ):
+        mock_post.side_effect = requests.exceptions.ReadTimeout(
+            "read timed out"
+        )
+
+        log = self._log(
+            delivery_status="Failed",
+            attempts=MAX_RETRY_ATTEMPTS - 1,
+            next_retry_at=add_to_date(now_datetime(), minutes=-1),
+        )
+        deliver_status_notification(str(log.name))
+
+        log.reload()
+        self.assertEqual(log.delivery_status, "Failed")
+        self.assertEqual(log.attempts, MAX_RETRY_ATTEMPTS)
+        self.assertIsNone(log.next_retry_at)
+        self.assertIn("ReadTimeout", str(log.error))
+        mock_log_error.assert_called_once()
+
+    @patch("frappe_whatsapp.utils.status_notifier.frappe.log_error")
+    @patch("frappe_whatsapp.utils.status_notifier.requests.post")
+    def test_invalid_webhook_url_logs_immediately_without_retry(
+        self, mock_post, mock_log_error
+    ):
+        frappe.db.set_value(
+            "WhatsApp Client App",
+            self.app.name,
+            "status_webhook_url",
+            "not-a-url",
+        )
+        mock_post.side_effect = requests.exceptions.MissingSchema(
+            "Invalid URL 'not-a-url': No scheme supplied"
+        )
+
+        log = self._log()
+        deliver_status_notification(str(log.name))
+
+        log.reload()
+        self.assertEqual(log.delivery_status, "Failed")
+        self.assertEqual(log.attempts, MAX_RETRY_ATTEMPTS)
+        self.assertIsNone(log.next_retry_at)
+        self.assertIn("MissingSchema", str(log.error))
+        mock_log_error.assert_called_once()
 
     @patch("frappe_whatsapp.utils.status_notifier.requests.post")
     def test_posts_to_status_webhook_url_with_correct_headers(self, mock_post):
