@@ -1,6 +1,6 @@
 {
  "actions": [],
- "creation": "2026-07-01 00:00:00.000000",
+ "creation": "2026-07-01 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
@@ -40,6 +40,7 @@
   {
    "fieldname": "ami_host",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "AMI Host"
   },
   {
@@ -101,7 +102,7 @@
  "grid_page_length": 50,
  "issingle": 1,
  "links": [],
- "modified": "2026-07-01 00:00:00.000000",
+ "modified": "2026-07-10 20:18:55.401007",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Calling Settings",

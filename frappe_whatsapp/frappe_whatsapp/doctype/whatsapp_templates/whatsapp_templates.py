@@ -81,8 +81,8 @@ class WhatsAppTemplates(Document):
 
         actual_name: DF.Data | None
         buttons: DF.Table[WhatsAppButton]
-        compliance_auto_managed: DF.Check
         category: DF.Literal["", "TRANSACTIONAL", "MARKETING", "OTP", "UTILITY", "AUTHENTICATION"]
+        compliance_auto_managed: DF.Check
         field_names: DF.SmallText | None
         footer: DF.Data | None
         for_doctype: DF.Link | None

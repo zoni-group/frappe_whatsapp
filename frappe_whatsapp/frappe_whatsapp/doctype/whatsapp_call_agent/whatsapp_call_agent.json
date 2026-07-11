@@ -2,7 +2,7 @@
  "actions": [],
  "allow_rename": 1,
  "autoname": "field:user",
- "creation": "2026-07-01 00:00:00.000000",
+ "creation": "2026-07-01 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
@@ -38,7 +38,7 @@
  ],
  "grid_page_length": 50,
  "links": [],
- "modified": "2026-07-01 00:00:00.000000",
+ "modified": "2026-07-10 20:23:25.959237",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Call Agent",
