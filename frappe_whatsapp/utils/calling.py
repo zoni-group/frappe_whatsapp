@@ -35,9 +35,27 @@ def _get_settings():
     return frappe.get_cached_doc("WhatsApp Calling Settings")
 
 
+def _get_configured_calling_account(settings=None) -> str | None:
+    settings = settings or _get_settings()
+    template_name = getattr(settings, "call_permission_template", None)
+    if not template_name:
+        return None
+
+    account_name = frappe.db.get_value(
+        "WhatsApp Templates",
+        template_name,
+        "whatsapp_account",
+    )
+    return str(account_name) if account_name else None
+
+
 def _get_account(whatsapp_account: str | None = None):
     if whatsapp_account:
         return frappe.get_doc("WhatsApp Account", whatsapp_account)
+
+    configured_calling_account = _get_configured_calling_account()
+    if configured_calling_account:
+        return frappe.get_doc("WhatsApp Account", configured_calling_account)
 
     account = get_whatsapp_account(account_type="outgoing")
     if not account:

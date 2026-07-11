@@ -9,6 +9,7 @@ from frappe.tests.utils import FrappeTestCase
 
 from frappe_whatsapp.utils.calling import (
     _build_originate_payload,
+    _get_account,
     handle_call_permission_reply,
     parse_permission_state,
 )
@@ -59,6 +60,15 @@ class TestWhatsAppCallingPermissionState(FrappeTestCase):
 
 
 class TestWhatsAppCallingAMI(FrappeTestCase):
+    def setUp(self):
+        frappe.set_user("Administrator")
+        for doctype in [
+            "whatsapp_account",
+            "whatsapp_templates",
+            "whatsapp_calling_settings",
+        ]:
+            frappe.reload_doc("frappe_whatsapp", "doctype", doctype)
+
     def test_build_originate_payload_uses_configured_templates(self):
         settings = SimpleNamespace(
             agent_channel_template="Local/{extension}@from-internal",
@@ -81,6 +91,48 @@ class TestWhatsAppCallingAMI(FrappeTestCase):
         self.assertEqual(payload["Exten"], "WA15551234567")
         self.assertEqual(payload["Timeout"], "45000")
         self.assertEqual(payload["Variable"], "WHATSAPP_CALL_ID=CALL-1")
+
+    def test_default_calling_account_comes_from_permission_template(self):
+        suffix = frappe.generate_hash(length=8)
+        default_outgoing = frappe.get_doc({
+            "doctype": "WhatsApp Account",
+            "account_name": f"Default Outgoing {suffix}",
+            "status": "Active",
+            "is_default_outgoing": 1,
+            "phone_id": f"default-phone-{suffix}",
+            "webhook_verify_token": f"default-verify-{suffix}",
+        }).insert(ignore_permissions=True)
+        calling_account = frappe.get_doc({
+            "doctype": "WhatsApp Account",
+            "account_name": f"Calling Account {suffix}",
+            "status": "Active",
+            "phone_id": f"calling-phone-{suffix}",
+            "webhook_verify_token": f"calling-verify-{suffix}",
+        }).insert(ignore_permissions=True)
+        with patch(
+            "frappe_whatsapp.frappe_whatsapp.doctype."
+            "whatsapp_templates.whatsapp_templates.WhatsAppTemplates.after_insert"
+        ):
+            template = frappe.get_doc({
+                "doctype": "WhatsApp Templates",
+                "template_name": f"call_permission_{suffix}",
+                "actual_name": f"call_permission_{suffix}",
+                "template": "Can we call you?",
+                "language": "en",
+                "category": "UTILITY",
+                "status": "APPROVED",
+                "whatsapp_account": calling_account.name,
+                "is_call_permission_request": 1,
+            }).insert(ignore_permissions=True)
+
+        frappe.db.set_single_value(
+            "WhatsApp Calling Settings",
+            "call_permission_template",
+            template.name,
+        )
+
+        self.assertEqual(default_outgoing.is_default_outgoing, 1)
+        self.assertEqual(_get_account().name, calling_account.name)
 
 
 class TestWhatsAppCallingWebhook(FrappeTestCase):
