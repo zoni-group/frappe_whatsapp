@@ -1,22 +1,32 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 import ssl
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import frappe
 import requests
 from frappe import _
-from frappe.utils import cint, now_datetime
+from frappe.utils import cint, get_datetime, now_datetime
+from frappe.utils.file_lock import LockTimeoutError
+from frappe.utils.synchronization import filelock
 
-from frappe_whatsapp.utils import format_number, get_whatsapp_account
+from frappe_whatsapp.utils import get_whatsapp_account
 
 
 CALL_UPDATE_EVENT = "whatsapp_call_update"
 ACTIVE_PERMISSION_STATUSES = {"Temporary", "Permanent"}
-TERMINAL_CALL_STATUSES = {"Permission Rejected", "PBX Queued", "Failed", "Cancelled"}
+TERMINAL_CALL_STATUSES = {
+    "Permission Accepted",
+    "Permission Rejected",
+    "PBX Queued",
+    "Failed",
+    "Cancelled",
+}
+CALL_PERMISSION_STATE_TTL_SECONDS = 60
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -29,6 +39,14 @@ def _as_list(value: Any) -> list[Any]:
 
 def _json(value: Any) -> str:
     return json.dumps(value or {}, default=str)
+
+
+def _normalize_phone_number(phone_number: Any) -> str:
+    return "".join(
+        character
+        for character in str(phone_number or "")
+        if character.isdigit()
+    )
 
 
 def _get_settings():
@@ -214,6 +232,47 @@ def permission_is_active(permission: Any) -> bool:
     return True
 
 
+def _permission_action_allowed(
+    permission: Any,
+    action_name: str,
+) -> bool | None:
+    """Return Meta's action decision, or None when it is not in the payload."""
+    if isinstance(permission, dict):
+        raw_state = permission.get("raw_meta_state")
+    else:
+        raw_state = getattr(permission, "raw_meta_state", None)
+
+    if isinstance(raw_state, str):
+        try:
+            raw_state = json.loads(raw_state)
+        except (TypeError, ValueError):
+            raw_state = {}
+
+    for action in _as_list(_as_dict(raw_state).get("actions")):
+        action = _as_dict(action)
+        if action.get("action_name") == action_name:
+            return bool(action.get("can_perform_action"))
+    return None
+
+
+def _permission_state_is_fresh(permission: Any) -> bool:
+    last_checked_at = getattr(permission, "last_checked_at", None)
+    if not last_checked_at:
+        return False
+    return get_datetime(last_checked_at) >= (
+        now_datetime() - timedelta(seconds=CALL_PERMISSION_STATE_TTL_SECONDS)
+    )
+
+
+def _permission_request_lock_name(
+    whatsapp_account: str,
+    phone_number: str,
+) -> str:
+    key = f"{whatsapp_account}:{_normalize_phone_number(phone_number)}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
+    return f"whatsapp-call-permission-{digest}"
+
+
 def _upsert_permission(
     *,
     whatsapp_account: str,
@@ -222,7 +281,7 @@ def _upsert_permission(
     last_requested_at=None,
     last_request_message: str | None = None,
 ):
-    number = format_number(phone_number)
+    number = _normalize_phone_number(phone_number)
     existing = frappe.db.get_value(
         "WhatsApp Call Permission",
         {"whatsapp_account": whatsapp_account, "phone_number": number},
@@ -254,7 +313,7 @@ def _upsert_permission(
 
 
 def get_local_permission(phone_number: str, whatsapp_account: str):
-    number = format_number(phone_number)
+    number = _normalize_phone_number(phone_number)
     existing = frappe.db.get_value(
         "WhatsApp Call Permission",
         {"whatsapp_account": whatsapp_account, "phone_number": number},
@@ -273,7 +332,7 @@ def get_local_permission(phone_number: str, whatsapp_account: str):
 
 def refresh_permission_state(phone_number: str, whatsapp_account: str | None = None):
     account = _get_account(whatsapp_account)
-    number = format_number(phone_number)
+    number = _normalize_phone_number(phone_number)
     token = account.get_password("token")
     url = f"{account.url}/{account.version}/{account.phone_id}/call_permissions"
 
@@ -306,13 +365,10 @@ def refresh_permission_state(phone_number: str, whatsapp_account: str | None = N
 
 def _find_pending_call(*, phone_number: str, whatsapp_account: str, contact: str | None = None):
     filters: dict[str, Any] = {
-        "phone_number": format_number(phone_number),
+        "phone_number": _normalize_phone_number(phone_number),
         "whatsapp_account": whatsapp_account,
         "status": "Permission Requested",
     }
-    if contact:
-        filters["contact"] = contact
-
     rows = frappe.get_all(
         "WhatsApp Call",
         filters=filters,
@@ -337,44 +393,113 @@ def get_call_state(
             "status": "Disabled",
             "message": _("WhatsApp calling is not enabled."),
             "can_call": False,
+            "can_request_permission": False,
             "permission_status": "Unknown",
             "pending_call": None,
             "agent_extension": None,
+            "call_permission_template": None,
+            "whatsapp_account": None,
         }
 
     account = _get_account(whatsapp_account)
     agent = _get_agent(agent_user, throw=False)
-    number = format_number(phone_number)
-    permission = get_local_permission(number, str(account.name))
+    number = _normalize_phone_number(phone_number)
+    account_name = str(account.name)
+    permission = get_local_permission(number, account_name)
     pending = _find_pending_call(
         phone_number=number,
-        whatsapp_account=str(account.name),
+        whatsapp_account=account_name,
         contact=contact,
     )
 
     if not agent:
         status = "Missing Agent Extension"
         message = _("No enabled PBX extension is mapped for your user.")
-    elif pending:
-        status = "Permission Requested"
-        message = _("Waiting for the contact to accept the call request.")
-    elif permission and permission_is_active(permission):
-        status = "Ready"
-        message = _("Ready to call.")
     else:
-        status = "No Permission"
-        message = _("Call permission is required before dialing.")
+        action_allowed = _permission_action_allowed(
+            permission, "send_call_permission_request")
+        start_allowed = _permission_action_allowed(permission, "start_call")
+        required_action_known = (
+            start_allowed
+            if permission and permission_is_active(permission)
+            else action_allowed
+        )
+        if (
+            not permission
+            or not _permission_state_is_fresh(permission)
+            or (not pending and required_action_known is None)
+        ):
+            try:
+                permission = refresh_permission_state(number, account_name)
+            except frappe.ValidationError:
+                return {
+                    "enabled": cint(settings.enabled),
+                    "status": "Unavailable",
+                    "message": _(
+                        "Could not verify call permission with Meta. Try again shortly."
+                    ),
+                    "can_call": False,
+                    "can_request_permission": False,
+                    "permission_status": (
+                        permission.permission_status
+                        if permission else "Unknown"
+                    ),
+                    "pending_call": pending.name if pending else None,
+                    "agent_extension": agent.extension,
+                    "call_permission_template": settings.call_permission_template,
+                    "whatsapp_account": account_name,
+                }
+
+        action_allowed = _permission_action_allowed(
+            permission, "send_call_permission_request")
+        start_allowed = _permission_action_allowed(permission, "start_call")
+        if pending and permission and permission_is_active(permission):
+            pending.status = "Permission Accepted"
+            pending.permission_responded_at = now_datetime()
+            pending.save(ignore_permissions=True)
+            pending = None
+
+        if (
+            permission
+            and permission_is_active(permission)
+            and start_allowed is True
+        ):
+            status = "Ready"
+            message = _("Permission is active. Click Call when you are ready.")
+        elif permission and permission_is_active(permission):
+            status = "Unavailable"
+            message = _("Meta does not currently allow starting this call.")
+        elif pending:
+            status = "Permission Requested"
+            message = _("Waiting for the contact to accept the call request.")
+        else:
+            status = "No Permission"
+            message = (
+                _("Call permission is required before dialing.")
+                if action_allowed
+                else _("Meta does not currently allow a call-permission request.")
+            )
+
+    can_request_permission = bool(
+        agent
+        and status == "No Permission"
+        and _permission_action_allowed(
+            permission, "send_call_permission_request") is True
+    )
 
     return {
         "enabled": cint(settings.enabled),
         "status": status,
         "message": message,
-        "can_call": status in {"Ready", "No Permission"},
+        "can_call": status == "Ready",
+        "can_request_permission": can_request_permission,
         "permission_status": (
             permission.permission_status if permission else "No Permission"
         ),
         "pending_call": pending.name if pending else None,
         "agent_extension": agent.extension if agent else None,
+        "call_permission_template": settings.call_permission_template,
+        "whatsapp_account": account_name,
     }
 
 
@@ -389,7 +514,7 @@ def _create_call(
 ):
     doc = frappe.get_doc({
         "doctype": "WhatsApp Call",
-        "phone_number": format_number(phone_number),
+        "phone_number": _normalize_phone_number(phone_number),
         "whatsapp_account": whatsapp_account,
         "contact": contact,
         "agent_user": agent_user,
@@ -467,6 +592,109 @@ def _send_permission_template(*, call_doc, settings):
     }
 
 
+def request_call_permission(
+    *,
+    phone_number: str,
+    contact: str | None = None,
+    agent_user: str | None = None,
+    whatsapp_account: str | None = None,
+) -> dict[str, Any]:
+    """Send one explicit call-permission request without starting a call."""
+    settings = _ensure_enabled()
+    account = _get_account(whatsapp_account)
+    account_name = str(account.name)
+    agent_user = agent_user or frappe.session.user
+    agent = _get_agent(agent_user)
+    number = _normalize_phone_number(phone_number)
+    _validate_call_permission_template(settings, account_name)
+
+    lock_context = filelock(
+        _permission_request_lock_name(account_name, number),
+        timeout=5,
+    )
+    release_after_transaction = False
+    try:
+        lock_context.__enter__()
+        try:
+            permission = refresh_permission_state(number, account_name)
+            if permission_is_active(permission):
+                can_start = _permission_action_allowed(permission, "start_call")
+                message = (
+                    _(
+                        "Call permission is already active. "
+                        "Click Call when you are ready."
+                    )
+                    if can_start is True
+                    else _(
+                        "Call permission is active, but Meta does not currently "
+                        "allow starting this call."
+                    )
+                )
+                return {
+                    "status": "Ready" if can_start is True else "Unavailable",
+                    "call": None,
+                    "message": message,
+                    "waiting_for_permission": False,
+                }
+
+            pending = _find_pending_call(
+                phone_number=number,
+                whatsapp_account=account_name,
+            )
+            if pending:
+                return {
+                    "status": pending.status,
+                    "call": pending.name,
+                    "message": _(
+                        "A call-permission request is already waiting for this contact."
+                    ),
+                    "waiting_for_permission": True,
+                }
+
+            if (
+                _permission_action_allowed(
+                    permission, "send_call_permission_request"
+                )
+                is not True
+            ):
+                frappe.throw(
+                    _(
+                        "Meta does not currently allow a call-permission request "
+                        "for this contact."
+                    ),
+                    title=_("Call Permission Request Unavailable"),
+                )
+
+            call_doc = _create_call(
+                phone_number=number,
+                whatsapp_account=account_name,
+                contact=contact,
+                agent_user=agent_user,
+                agent_extension=str(agent.extension),
+                status="Permission Requested",
+            )
+            result = _send_permission_template(
+                call_doc=call_doc,
+                settings=settings,
+            )
+
+            def release_lock():
+                lock_context.__exit__(None, None, None)
+
+            frappe.db.after_commit.add(release_lock)
+            frappe.db.after_rollback.add(release_lock)
+            release_after_transaction = True
+            return result
+        finally:
+            if not release_after_transaction:
+                lock_context.__exit__(None, None, None)
+    except LockTimeoutError:
+        frappe.throw(
+            _("Another call-permission request is already being processed."),
+            title=_("Call Permission Request In Progress"),
+        )
+
+
 def start_outbound_call(
     *,
     phone_number: str,
@@ -474,58 +702,43 @@ def start_outbound_call(
     agent_user: str | None = None,
     whatsapp_account: str | None = None,
 ) -> dict[str, Any]:
-    settings = _ensure_enabled()
+    _ensure_enabled()
     account = _get_account(whatsapp_account)
     agent_user = agent_user or frappe.session.user
     agent = _get_agent(agent_user)
-    number = format_number(phone_number)
+    number = _normalize_phone_number(phone_number)
 
-    pending = _find_pending_call(
-        phone_number=number,
-        whatsapp_account=str(account.name),
-        contact=contact,
-    )
-    permission = refresh_permission_state(number, str(account.name))
-    if permission_is_active(permission):
-        call_doc = pending
-        if call_doc:
-            call_doc.status = "Permission Accepted"
-            call_doc.permission_responded_at = now_datetime()
-            call_doc.save(ignore_permissions=True)
-        else:
-            call_doc = _create_call(
-                phone_number=number,
-                whatsapp_account=str(account.name),
-                contact=contact,
-                agent_user=agent_user,
-                agent_extension=str(agent.extension),
-                status="Permission Accepted",
-            )
-        originate_call(call_doc, raise_on_failure=True)
-        return {
-            "status": call_doc.status,
-            "call": call_doc.name,
-            "message": _("Calling your PBX extension now."),
-            "waiting_for_permission": False,
-        }
-
-    if pending:
-        return {
-            "status": pending.status,
-            "call": pending.name,
-            "message": _("Waiting for the contact to accept the call request."),
-            "waiting_for_permission": True,
-        }
+    account_name = str(account.name)
+    permission = refresh_permission_state(number, account_name)
+    if not permission_is_active(permission):
+        frappe.throw(
+            _(
+                "Active WhatsApp call permission is required. Send a call-permission "
+                "request and wait for the contact to accept it."
+            ),
+            title=_("Call Permission Required"),
+        )
+    if _permission_action_allowed(permission, "start_call") is not True:
+        frappe.throw(
+            _("Meta does not currently allow starting this WhatsApp call."),
+            title=_("WhatsApp Call Unavailable"),
+        )
 
     call_doc = _create_call(
         phone_number=number,
-        whatsapp_account=str(account.name),
+        whatsapp_account=account_name,
         contact=contact,
         agent_user=agent_user,
         agent_extension=str(agent.extension),
-        status="Permission Requested",
+        status="Permission Accepted",
     )
-    return _send_permission_template(call_doc=call_doc, settings=settings)
+    originate_call(call_doc, raise_on_failure=True)
+    return {
+        "status": call_doc.status,
+        "call": call_doc.name,
+        "message": _("Calling your PBX extension now."),
+        "waiting_for_permission": False,
+    }
 
 
 def _safe_format(template: str, values: dict[str, str], *, label: str) -> str:
@@ -539,7 +752,7 @@ def _safe_format(template: str, values: dict[str, str], *, label: str) -> str:
 
 
 def _build_originate_payload(settings, call_doc, action_id: str) -> dict[str, str]:
-    number = format_number(call_doc.phone_number)
+    number = _normalize_phone_number(call_doc.phone_number)
     values = {
         "number": number,
         "e164": f"+{number}",
@@ -747,7 +960,7 @@ def _find_call_from_permission_reply(
         )
 
     filters: dict[str, Any] = {
-        "phone_number": format_number(phone_number),
+        "phone_number": _normalize_phone_number(phone_number),
         "whatsapp_account": whatsapp_account,
         "status": "Permission Requested",
     }
@@ -768,7 +981,7 @@ def _find_call_from_permission_reply(
         rows = frappe.get_all(
             "WhatsApp Call",
             filters={
-                "phone_number": format_number(phone_number),
+                "phone_number": _normalize_phone_number(phone_number),
                 "whatsapp_account": whatsapp_account,
                 "status": "Permission Requested",
             },
@@ -830,12 +1043,9 @@ def handle_call_permission_reply(
     if status in ACTIVE_PERMISSION_STATUSES:
         call_doc.status = "Permission Accepted"
         call_doc.save(ignore_permissions=True)
-        publish_call_update(call_doc, _("Call permission accepted."))
-        frappe.enqueue(
-            "frappe_whatsapp.utils.calling.originate_pending_call",
-            queue="short",
-            enqueue_after_commit=True,
-            call_name=call_doc.name,
+        publish_call_update(
+            call_doc,
+            _("Call permission accepted. Click Call when you are ready."),
         )
     elif status == "Rejected":
         call_doc.status = "Permission Rejected"
@@ -852,6 +1062,8 @@ def publish_call_update(call_doc, message: str):
     payload = {
         "event_type": "whatsapp_call_update",
         "room": call_doc.contact,
+        "phone_number": _normalize_phone_number(call_doc.phone_number),
+        "whatsapp_account": call_doc.whatsapp_account,
         "call": call_doc.name,
         "status": call_doc.status,
         "content": message,

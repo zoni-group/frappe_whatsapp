@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import time
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
@@ -11,10 +12,15 @@ from frappe.tests.utils import FrappeTestCase
 from frappe_whatsapp.utils.calling import (
     _build_originate_payload,
     _get_account,
+    _permission_action_allowed,
     _read_ami_banner,
     _send_ami_originate,
+    get_call_state,
     handle_call_permission_reply,
+    originate_pending_call,
     parse_permission_state,
+    request_call_permission,
+    start_outbound_call,
 )
 
 
@@ -318,6 +324,334 @@ class TestWhatsAppCallingAMI(FrappeTestCase):
         self.assertEqual(_get_account().name, calling_account.name)
 
 
+class TestWhatsAppCallingActions(FrappeTestCase):
+    def setUp(self):
+        frappe.set_user("Administrator")
+        for doctype in [
+            "whatsapp_account",
+            "whatsapp_call",
+            "whatsapp_call_permission",
+        ]:
+            frappe.reload_doc("frappe_whatsapp", "doctype", doctype)
+
+    def _create_account(self):
+        suffix = frappe.generate_hash(length=8)
+        return frappe.get_doc({
+            "doctype": "WhatsApp Account",
+            "account_name": f"Call Action Account {suffix}",
+            "status": "Active",
+            "url": "https://graph.facebook.com",
+            "version": "v24.0",
+            "phone_id": f"phone-{suffix}",
+            "webhook_verify_token": f"verify-{suffix}",
+        }).insert(ignore_permissions=True)
+
+    def _permission(
+        self,
+        status="No Permission",
+        *,
+        can_request=True,
+        can_start=None,
+    ):
+        if can_start is None:
+            can_start = status in {"Temporary", "Permanent"}
+        return SimpleNamespace(
+            permission_status=status,
+            expires_at=None,
+            raw_meta_state={
+                "actions": [{
+                    "action_name": "send_call_permission_request",
+                    "can_perform_action": can_request,
+                }, {
+                    "action_name": "start_call",
+                    "can_perform_action": can_start,
+                }],
+            },
+            last_checked_at=frappe.utils.now_datetime(),
+        )
+
+    def _service_patches(self, account, permission):
+        settings = SimpleNamespace(
+            enabled=1,
+            call_permission_template="call_permission-en_US",
+        )
+        return (
+            patch("frappe_whatsapp.utils.calling._ensure_enabled", return_value=settings),
+            patch("frappe_whatsapp.utils.calling._get_account", return_value=account),
+            patch(
+                "frappe_whatsapp.utils.calling._get_agent",
+                return_value=SimpleNamespace(extension="847"),
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling.refresh_permission_state",
+                return_value=permission,
+            ),
+        )
+
+    def test_permission_action_parses_stored_json(self):
+        permission = SimpleNamespace(raw_meta_state='{"actions": [{'
+            '"action_name": "send_call_permission_request", '
+            '"can_perform_action": true}]}')
+
+        self.assertIs(
+            _permission_action_allowed(
+                permission, "send_call_permission_request"),
+            True,
+        )
+
+    def test_request_is_idempotent_across_duplicate_contact_rooms(self):
+        account = self._create_account()
+        permission = self._permission()
+        patches = self._service_patches(account, permission)
+
+        with (
+            patches[0], patches[1], patches[2], patches[3],
+            patch(
+                "frappe_whatsapp.utils.calling._validate_call_permission_template"
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling.filelock",
+                side_effect=lambda *_args, **_kwargs: nullcontext(),
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling._send_permission_template",
+                side_effect=lambda *, call_doc, settings: {
+                    "status": call_doc.status,
+                    "call": call_doc.name,
+                    "message": "sent",
+                    "waiting_for_permission": True,
+                },
+            ) as mock_send,
+        ):
+            first = request_call_permission(
+                phone_number="+1 (555) 123-4567",
+                contact="room-a",
+                agent_user="Administrator",
+            )
+            second = request_call_permission(
+                phone_number="15551234567",
+                contact="room-b",
+                agent_user="Administrator",
+            )
+
+        self.assertEqual(first["message"], "sent")
+        self.assertEqual(second["call"], first["call"])
+        self.assertIn("already waiting", second["message"])
+        mock_send.assert_called_once()
+        self.assertEqual(
+            frappe.db.count(
+                "WhatsApp Call",
+                {
+                    "phone_number": "15551234567",
+                    "whatsapp_account": account.name,
+                    "status": "Permission Requested",
+                },
+            ),
+            1,
+        )
+
+    def test_active_permission_does_not_send_request(self):
+        account = self._create_account()
+        permission = self._permission("Permanent", can_request=False)
+        patches = self._service_patches(account, permission)
+
+        with (
+            patches[0], patches[1], patches[2], patches[3],
+            patch(
+                "frappe_whatsapp.utils.calling._validate_call_permission_template"
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling.filelock",
+                side_effect=lambda *_args, **_kwargs: nullcontext(),
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling._send_permission_template"
+            ) as mock_send,
+        ):
+            result = request_call_permission(
+                phone_number="15551234568",
+                agent_user="Administrator",
+            )
+
+        self.assertEqual(result["status"], "Ready")
+        mock_send.assert_not_called()
+
+    def test_meta_disallowed_permission_request_is_blocked(self):
+        account = self._create_account()
+        permission = self._permission(can_request=False)
+        patches = self._service_patches(account, permission)
+
+        with (
+            patches[0], patches[1], patches[2], patches[3],
+            patch(
+                "frappe_whatsapp.utils.calling._validate_call_permission_template"
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling.filelock",
+                side_effect=lambda *_args, **_kwargs: nullcontext(),
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling._send_permission_template"
+            ) as mock_send,
+        ):
+            with self.assertRaises(frappe.ValidationError) as raised:
+                request_call_permission(
+                    phone_number="15551234569",
+                    agent_user="Administrator",
+                )
+
+        self.assertIn("does not currently allow", str(raised.exception))
+        mock_send.assert_not_called()
+
+    @patch("frappe_whatsapp.utils.calling.originate_call")
+    @patch("frappe_whatsapp.utils.calling._create_call")
+    @patch("frappe_whatsapp.utils.calling.refresh_permission_state")
+    @patch("frappe_whatsapp.utils.calling._get_agent")
+    @patch("frappe_whatsapp.utils.calling._get_account")
+    @patch("frappe_whatsapp.utils.calling._ensure_enabled")
+    def test_call_without_permission_never_sends_template_or_originates(
+        self,
+        mock_enabled,
+        mock_account,
+        mock_agent,
+        mock_refresh,
+        mock_create,
+        mock_originate,
+    ):
+        mock_enabled.return_value = SimpleNamespace(enabled=1)
+        mock_account.return_value = SimpleNamespace(name="calling-account")
+        mock_agent.return_value = SimpleNamespace(extension="847")
+        mock_refresh.return_value = self._permission()
+
+        with self.assertRaises(frappe.ValidationError) as raised:
+            start_outbound_call(
+                phone_number="15551234570",
+                agent_user="Administrator",
+            )
+
+        self.assertIn("Active WhatsApp call permission", str(raised.exception))
+        mock_create.assert_not_called()
+        mock_originate.assert_not_called()
+
+    @patch("frappe_whatsapp.utils.calling.originate_call")
+    @patch("frappe_whatsapp.utils.calling._create_call")
+    @patch("frappe_whatsapp.utils.calling.refresh_permission_state")
+    @patch("frappe_whatsapp.utils.calling._get_agent")
+    @patch("frappe_whatsapp.utils.calling._get_account")
+    @patch("frappe_whatsapp.utils.calling._ensure_enabled")
+    def test_call_with_permission_originates_once(
+        self,
+        mock_enabled,
+        mock_account,
+        mock_agent,
+        mock_refresh,
+        mock_create,
+        mock_originate,
+    ):
+        call_doc = SimpleNamespace(name="CALL-1", status="Permission Accepted")
+        mock_enabled.return_value = SimpleNamespace(enabled=1)
+        mock_account.return_value = SimpleNamespace(name="calling-account")
+        mock_agent.return_value = SimpleNamespace(extension="847")
+        mock_refresh.return_value = self._permission(
+            "Permanent", can_request=False)
+        mock_create.return_value = call_doc
+
+        result = start_outbound_call(
+            phone_number="15551234571",
+            contact="room-a",
+            agent_user="Administrator",
+        )
+
+        self.assertEqual(result["call"], "CALL-1")
+        mock_originate.assert_called_once_with(
+            call_doc, raise_on_failure=True)
+
+    @patch("frappe_whatsapp.utils.calling.refresh_permission_state")
+    @patch("frappe_whatsapp.utils.calling._find_pending_call")
+    @patch("frappe_whatsapp.utils.calling.get_local_permission")
+    @patch("frappe_whatsapp.utils.calling._get_agent")
+    @patch("frappe_whatsapp.utils.calling._get_account")
+    @patch("frappe_whatsapp.utils.calling._get_settings")
+    def test_call_state_exposes_separate_request_and_call_actions(
+        self,
+        mock_settings,
+        mock_account,
+        mock_agent,
+        mock_local,
+        mock_pending,
+        mock_refresh,
+    ):
+        mock_settings.return_value = SimpleNamespace(
+            enabled=1,
+            call_permission_template="call_permission-en_US",
+        )
+        mock_account.return_value = SimpleNamespace(name="calling-account")
+        mock_agent.return_value = SimpleNamespace(extension="847")
+        mock_pending.return_value = None
+        mock_local.return_value = self._permission()
+
+        no_permission = get_call_state(
+            phone_number="15551234572",
+            contact="room-a",
+            agent_user="Administrator",
+        )
+        self.assertFalse(no_permission["can_call"])
+        self.assertTrue(no_permission["can_request_permission"])
+
+        mock_local.return_value = self._permission(
+            "Permanent", can_request=False)
+        ready = get_call_state(
+            phone_number="15551234572",
+            contact="room-b",
+            agent_user="Administrator",
+        )
+        self.assertTrue(ready["can_call"])
+        self.assertFalse(ready["can_request_permission"])
+
+        mock_local.return_value = self._permission(
+            "Permanent", can_request=False, can_start=False)
+        unavailable = get_call_state(
+            phone_number="15551234572",
+            contact="room-b",
+            agent_user="Administrator",
+        )
+        self.assertEqual(unavailable["status"], "Unavailable")
+        self.assertFalse(unavailable["can_call"])
+
+        pending = SimpleNamespace(
+            name="CALL-PENDING",
+            status="Permission Requested",
+            permission_responded_at=None,
+            save=MagicMock(),
+        )
+        mock_pending.return_value = pending
+        mock_local.return_value = self._permission(
+            "Permanent", can_request=False)
+        reconciled = get_call_state(
+            phone_number="15551234572",
+            contact="room-b",
+            agent_user="Administrator",
+        )
+        self.assertEqual(reconciled["status"], "Ready")
+        self.assertIsNone(reconciled["pending_call"])
+        self.assertEqual(pending.status, "Permission Accepted")
+        pending.save.assert_called_once_with(ignore_permissions=True)
+        mock_refresh.assert_not_called()
+
+    @patch("frappe_whatsapp.utils.calling.originate_call")
+    @patch("frappe_whatsapp.utils.calling.frappe.get_doc")
+    def test_legacy_accepted_job_cannot_originate(
+        self, mock_get_doc, mock_originate
+    ):
+        call_doc = SimpleNamespace(status="Permission Accepted")
+        mock_get_doc.return_value = call_doc
+
+        result = originate_pending_call("CALL-1")
+
+        self.assertIs(result, call_doc)
+        mock_originate.assert_not_called()
+
+
 class TestWhatsAppCallingWebhook(FrappeTestCase):
     def setUp(self):
         frappe.set_user("Administrator")
@@ -367,9 +701,10 @@ class TestWhatsAppCallingWebhook(FrappeTestCase):
         }).insert(ignore_permissions=True)
 
     @patch("frappe_whatsapp.utils.calling.publish_call_update")
+    @patch("frappe_whatsapp.utils.calling.originate_call")
     @patch("frappe_whatsapp.utils.calling.frappe.enqueue")
-    def test_accept_reply_updates_permission_and_enqueues_originate(
-        self, mock_enqueue, _mock_publish
+    def test_accept_reply_updates_permission_without_enqueuing_originate(
+        self, mock_enqueue, mock_originate, mock_publish
     ):
         account = self._create_account()
         phone = "15551234567"
@@ -394,8 +729,12 @@ class TestWhatsAppCallingWebhook(FrappeTestCase):
             f"{phone}-{account.name}",
         )
         self.assertEqual(permission.permission_status, "Temporary")
-        mock_enqueue.assert_called_once()
-        self.assertEqual(mock_enqueue.call_args.kwargs["call_name"], call_doc.name)
+        mock_enqueue.assert_not_called()
+        mock_originate.assert_not_called()
+        self.assertIn(
+            "Click Call",
+            mock_publish.call_args.args[1],
+        )
 
     @patch("frappe_whatsapp.utils.calling.publish_call_update")
     @patch("frappe_whatsapp.utils.calling.frappe.enqueue")
