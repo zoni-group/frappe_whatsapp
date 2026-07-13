@@ -6,7 +6,6 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils.safe_exec import get_safe_globals, safe_exec
-from frappe.integrations.utils import make_post_request
 from frappe.desk.form.utils import get_pdf_link
 from frappe.utils import add_to_date, now_datetime, datetime, \
     get_url, cint, get_datetime
@@ -14,6 +13,7 @@ from frappe.model import numeric_fieldtypes
 from datetime import datetime as py_datetime, time as py_time
 
 from frappe_whatsapp.utils import get_whatsapp_account
+from frappe_whatsapp.utils.meta import request_meta_json
 from frappe_whatsapp.utils.consent import (
     verify_consent_for_send,
     enforce_marketing_template_compliance,
@@ -58,7 +58,7 @@ def _first_message_id(resp: dict[str, Any]) -> Optional[str]:
 def _integration_request_json() -> dict[str, Any]:
     """Safely read frappe.flags.integration_request.json() if present."""
     ir = getattr(frappe.flags, "integration_request", None)
-    if not ir:
+    if ir is None:
         return {}
     json_func = getattr(ir, "json", None)
     if not callable(json_func):
@@ -563,12 +563,21 @@ class WhatsAppNotification(Document):
         meta_json = ""
 
         try:
-            raw_response: Any = make_post_request(
+            template_payload = data.get("template")
+            if (
+                isinstance(template_payload, dict)
+                and template_payload.get("components") == []
+            ):
+                template_payload.pop("components", None)
+
+            response = request_meta_json(
+                "POST",
                 f"{wa.url}/{wa.version}/{wa.phone_id}/messages",
+                account_name=str(wa.name),
+                operation=_("scheduled notification send"),
                 headers=headers,
-                data=json.dumps(data),
+                json_body=data,
             )
-            response = _as_dict(raw_response)
 
             # Ensure content_type is always a string
             if not isinstance(
@@ -663,15 +672,6 @@ class WhatsAppNotification(Document):
 
         except Exception as e:
             error_message = str(e)
-
-            # Try to read Meta error from integration_request, safely
-            ir_json = _integration_request_json()
-            err = ir_json.get("error")
-            if isinstance(err, dict):
-                # Some payloads use Error/message keys
-                maybe = err.get("Error") or err.get("message")
-                if isinstance(maybe, str) and maybe:
-                    error_message = maybe
 
             frappe.msgprint(
                 f"Failed to trigger whatsapp message: {error_message}",

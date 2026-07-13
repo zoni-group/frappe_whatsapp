@@ -12,6 +12,7 @@ from frappe.utils import get_url
 from typing import cast, Any
 from urllib.parse import unquote, urlparse
 from frappe_whatsapp.utils.routing import set_last_sender_app
+from frappe_whatsapp.utils.meta import request_meta_json
 
 from frappe_whatsapp.utils import get_whatsapp_account, format_number
 from frappe_whatsapp.utils.consent import (
@@ -41,7 +42,7 @@ MAX_AUDIO_UPLOAD_BYTES = 16 * 1024 * 1024
 
 def _get_integration_request_json() -> dict:
     integration_request = getattr(frappe.flags, "integration_request", None)
-    if not integration_request:
+    if integration_request is None:
         return {}
 
     json_method = getattr(integration_request, "json", None)
@@ -588,6 +589,9 @@ class WhatsAppMessage(Document):
             try:
                 self.notify(data)
                 self.status = "Success"
+            except frappe.ValidationError:
+                self.status = "Failed"
+                raise
             except Exception as e:
                 self.status = "Failed"
                 frappe.throw(f"Failed to send message {str(e)}")
@@ -596,6 +600,9 @@ class WhatsAppMessage(Document):
             try:
                 self.send_template()
                 self.status = "Success"
+            except frappe.ValidationError:
+                self.status = "Failed"
+                raise
             except Exception as e:
                 self.status = "Failed"
                 frappe.throw(f"Failed to send template message {str(e)}")
@@ -618,6 +625,32 @@ class WhatsAppMessage(Document):
             to_number=str(self.to or ""),
             service_window_active=bool(self.within_conversation_window),
         )
+        if template.is_call_permission_request:
+            from frappe_whatsapp.utils.calling import (
+                permission_is_active,
+                refresh_permission_state,
+            )
+
+            permission = refresh_permission_state(
+                str(self.to or ""), self.whatsapp_account)
+            if permission_is_active(permission):
+                permission_status = getattr(
+                    permission, "permission_status", None)
+                if isinstance(permission, dict):
+                    permission_status = permission.get("permission_status")
+                frappe.throw(
+                    _(
+                        "Recipient {0} already has {1} WhatsApp call "
+                        "permission. Use the outbound-call workflow instead "
+                        "of sending another permission request."
+                    ).format(
+                        format_number(self.to),
+                        str(permission_status or "active").lower(),
+                    ),
+                    title=_("Call Permission Already Granted"),
+                )
+
+        components: list[dict[str, Any]] = []
         data: dict[str, Any] = {
             "messaging_product": "whatsapp",
             "to": format_number(self.to),
@@ -625,7 +658,6 @@ class WhatsAppMessage(Document):
             "template": {
                 "name": template.actual_name or template.template_name,
                 "language": {"code": template.language_code},
-                "components": [],
             },
         }
 
@@ -662,7 +694,7 @@ class WhatsAppMessage(Document):
                     template_parameters.append(value)
 
             self.template_parameters = json.dumps(template_parameters)
-            data["template"]["components"].append(
+            components.append(
                 {
                     "type": "body",
                     "parameters": parameters,
@@ -677,7 +709,7 @@ class WhatsAppMessage(Document):
                         url = f'{self.attach}'
                     else:
                         url = f'{get_url()}{self.attach}'
-                    data['template']['components'].append({
+                    components.append({
                         "type": "header",
                         "parameters": [{
                             "type": "image",
@@ -693,7 +725,7 @@ class WhatsAppMessage(Document):
                         url = f'{template.sample}'
                     else:
                         url = f'{get_url()}{template.sample}'
-                    data['template']['components'].append({
+                    components.append({
                         "type": "header",
                         "parameters": [{
                             "type": "image",
@@ -743,7 +775,10 @@ class WhatsAppMessage(Document):
                     })
 
             if button_parameters:
-                data['template']['components'].extend(button_parameters)
+                components.extend(button_parameters)
+
+        if components:
+            data["template"]["components"] = components
 
         self.notify(data)
 
@@ -772,70 +807,28 @@ class WhatsAppMessage(Document):
             f"{whatsapp_account.url}/{whatsapp_account.version}"
             f"/{whatsapp_account.phone_id}/messages"
         )
-        try:
-            response = make_post_request(
-                request_url,
-                headers=headers,
-                data=json.dumps(data),
-            )
+        response_dict = request_meta_json(
+            "POST",
+            request_url,
+            account_name=str(whatsapp_account.name),
+            operation=_("message send"),
+            headers=headers,
+            json_body=data,
+        )
 
-            response_dict: dict[str, Any] = {}
-            if response is None:
-                response_dict = {}
-            elif isinstance(response, str):
-                try:
-                    parsed = json.loads(response)
-                    response_dict = parsed if isinstance(parsed, dict) else {}
-                except Exception:
-                    response_dict = {}
-            elif isinstance(response, dict):
-                response_dict = response
-            else:
-                response_dict = {}
+        messages = response_dict.get("messages")
+        if isinstance(messages, list) and messages:
+            first = messages[0]
+            if isinstance(first, dict):
+                message_id = first.get("id")
+                if isinstance(message_id, str) and message_id:
+                    self.message_id = message_id
 
-            messages = response_dict.get("messages")
-            if isinstance(messages, list) and messages:
-                first = messages[0]
-                if isinstance(first, dict):
-                    message_id = first.get("id")
-                    if isinstance(message_id, str) and message_id:
-                        self.message_id = message_id
-
-        except Exception as e:
-            integration_json = _get_integration_request_json()
-            res = integration_json.get("error", {}) if isinstance(
-                integration_json, dict) else {}
-            error_message = res.get("Error", res.get("message"))
-
-            response_obj = getattr(e, "response", None)
-            status_code = getattr(response_obj, "status_code", None)
-            response_text = getattr(response_obj, "text", None)
-
-            if not integration_json and (
-                    status_code is not None or response_text):
-                integration_json = {
-                    "error": {
-                        "message": str(e),
-                        "status_code": status_code,
-                        "response_text": response_text,
-                        "request_url": request_url,
-                    }
-                }
-
-            detailed_error = error_message or str(e)
-            if status_code is not None:
-                detailed_error = f"{detailed_error} (HTTP {status_code})"
-            frappe.get_doc(
-                {
-                    "doctype": "WhatsApp Notification Log",
-                    "template": "Text Message",
-                    "meta_data": integration_json,
-                }
-            ).insert(ignore_permissions=True)
-
+        if not self.message_id:
             frappe.throw(
-                msg=detailed_error or _("Failed to send WhatsApp message"),
-                title=res.get("error_user_title", "Error"))
+                _("WhatsApp Account {0}: Meta did not return a message ID.")
+                .format(whatsapp_account.name)
+            )
 
     def format_number(self, number):
         """Format number."""

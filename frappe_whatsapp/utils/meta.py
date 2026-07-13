@@ -33,11 +33,19 @@ def _meta_error_message(
     operation: str,
 ) -> str:
     error = _response_error(response)
-    detail = str(
-        error.get("error_user_msg")
-        or error.get("message")
-        or _("Meta returned HTTP {0}.").format(response.status_code)
-    )
+    details = []
+    meta_message = error.get("message")
+    user_message = error.get("error_user_msg")
+    if meta_message:
+        details.append(str(meta_message))
+    if user_message and str(user_message) != str(meta_message or ""):
+        details.append(_("User message: {0}").format(str(user_message)))
+    error_data = _as_dict(error.get("error_data"))
+    error_details = error_data.get("details")
+    if error_details:
+        details.append(_("Details: {0}").format(str(error_details)))
+    detail = " ".join(details) or _("Meta returned HTTP {0}.").format(
+        response.status_code)
 
     identifiers = []
     if error.get("code") is not None:
@@ -64,6 +72,7 @@ def request_meta_json(
     operation: str,
     headers: dict[str, str] | None = None,
     params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> dict[str, Any]:
     """Make a Graph API request without leaking credentials on failure."""
@@ -73,6 +82,7 @@ def request_meta_json(
             url,
             headers=headers,
             params=params,
+            json=json_body,
             timeout=timeout,
         )
     except requests.RequestException as exc:

@@ -47,6 +47,46 @@ class TestMetaRequests(FrappeTestCase):
         self.assertNotIn("secret", message)
 
     @patch("frappe_whatsapp.utils.meta.requests.request")
+    def test_post_error_preserves_safe_meta_details(self, mock_request):
+        mock_request.return_value = _response(
+            400,
+            {
+                "error": {
+                    "message": "Invalid parameter",
+                    "code": 100,
+                    "error_subcode": 2494073,
+                    "error_user_msg": "The template payload is invalid.",
+                    "error_data": {
+                        "details": "components must not be empty",
+                    },
+                }
+            },
+        )
+
+        with self.assertRaises(frappe.ValidationError) as raised:
+            request_meta_json(
+                "POST",
+                "https://graph.facebook.com/v24.0/phone/messages",
+                account_name="calling-account",
+                operation="message send",
+                headers={"Authorization": "Bearer top-secret-token"},
+                json_body={"messaging_product": "whatsapp"},
+            )
+
+        message = str(raised.exception)
+        self.assertIn("calling-account", message)
+        self.assertIn("Invalid parameter", message)
+        self.assertIn("The template payload is invalid.", message)
+        self.assertIn("components must not be empty", message)
+        self.assertIn("code 100", message)
+        self.assertIn("subcode 2494073", message)
+        self.assertNotIn("top-secret-token", message)
+        self.assertEqual(
+            mock_request.call_args.kwargs["json"],
+            {"messaging_product": "whatsapp"},
+        )
+
+    @patch("frappe_whatsapp.utils.meta.requests.request")
     def test_paginated_collection_follows_all_pages(self, mock_request):
         mock_request.side_effect = [
             _response(
