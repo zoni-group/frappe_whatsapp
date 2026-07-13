@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import socket
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
@@ -10,6 +11,7 @@ from frappe.tests.utils import FrappeTestCase
 from frappe_whatsapp.utils.calling import (
     _build_originate_payload,
     _get_account,
+    _send_ami_originate,
     handle_call_permission_reply,
     parse_permission_state,
 )
@@ -106,6 +108,152 @@ class TestWhatsAppCallingAMI(FrappeTestCase):
         self.assertEqual(payload["Exten"], "WA15551234567")
         self.assertEqual(payload["Timeout"], "45000")
         self.assertEqual(payload["Variable"], "WHATSAPP_CALL_ID=CALL-1")
+
+    def _ami_settings(self):
+        settings = SimpleNamespace(
+            ami_host="172.31.1.252",
+            ami_port=5038,
+            ami_username="frappe_whatsapp",
+            ami_use_tls=0,
+            originate_timeout=45,
+            agent_channel_template="Local/{extension}@from-internal",
+            destination_number_template="829944{number}",
+            destination_context="from-internal",
+        )
+        settings.get_password = lambda _fieldname: "test-ami-secret"
+        return settings
+
+    def _ami_call(self):
+        return SimpleNamespace(
+            name="CALL-1",
+            phone_number="+12015550123",
+            agent_extension="847",
+        )
+
+    @patch("frappe_whatsapp.utils.calling._read_ami_response")
+    @patch("frappe_whatsapp.utils.calling._send_ami_action")
+    @patch("frappe_whatsapp.utils.calling.socket.create_connection")
+    def test_ami_originate_disables_events_and_logs_off(
+        self, mock_connect, mock_action, mock_read
+    ):
+        sock = MagicMock()
+        mock_connect.return_value = sock
+        mock_read.return_value = {}
+        mock_action.side_effect = [
+            {"Response": "Success", "Message": "Authentication accepted"},
+            {
+                "Response": "Success",
+                "Message": "Originate successfully queued",
+                "ActionID": "action-1",
+            },
+            {"Response": "Goodbye"},
+        ]
+
+        response = _send_ami_originate(
+            self._ami_settings(), self._ami_call(), "action-1")
+
+        self.assertEqual(response["Response"], "Success")
+        self.assertEqual(
+            mock_action.call_args_list,
+            [
+                call(sock, {
+                    "Action": "Login",
+                    "Username": "frappe_whatsapp",
+                    "Secret": "test-ami-secret",
+                    "Events": "off",
+                }),
+                call(sock, {
+                    "Action": "Originate",
+                    "ActionID": "action-1",
+                    "Channel": "Local/847@from-internal",
+                    "Context": "from-internal",
+                    "Exten": "82994412015550123",
+                    "Priority": "1",
+                    "Timeout": "45000",
+                    "CallerID": "WhatsApp <847>",
+                    "Async": "true",
+                    "Variable": "WHATSAPP_CALL_ID=CALL-1",
+                }),
+                call(sock, {"Action": "Logoff"}),
+            ],
+        )
+        sock.close.assert_called_once()
+
+    @patch("frappe_whatsapp.utils.calling._read_ami_response")
+    @patch("frappe_whatsapp.utils.calling._send_ami_action")
+    @patch("frappe_whatsapp.utils.calling.socket.create_connection")
+    def test_ami_login_rejection_is_preserved_without_secret(
+        self, mock_connect, mock_action, mock_read
+    ):
+        sock = MagicMock()
+        mock_connect.return_value = sock
+        mock_read.return_value = {}
+        mock_action.side_effect = [
+            {"Response": "Error", "Message": "Authentication failed"},
+            {"Response": "Goodbye"},
+        ]
+
+        with self.assertRaises(frappe.ValidationError) as raised:
+            _send_ami_originate(
+                self._ami_settings(), self._ami_call(), "action-1")
+
+        self.assertEqual(str(raised.exception), "Authentication failed")
+        self.assertNotIn("test-ami-secret", str(raised.exception))
+        self.assertEqual(
+            mock_action.call_args_list[-1],
+            call(sock, {"Action": "Logoff"}),
+        )
+        sock.close.assert_called_once()
+
+    @patch("frappe_whatsapp.utils.calling._read_ami_response")
+    @patch("frappe_whatsapp.utils.calling._send_ami_action")
+    @patch("frappe_whatsapp.utils.calling.socket.create_connection")
+    def test_ami_login_requires_explicit_success(
+        self, mock_connect, mock_action, mock_read
+    ):
+        sock = MagicMock()
+        mock_connect.return_value = sock
+        mock_read.return_value = {}
+        mock_action.side_effect = [{"Event": "FullyBooted"}, {}]
+
+        with self.assertRaises(frappe.ValidationError) as raised:
+            _send_ami_originate(
+                self._ami_settings(), self._ami_call(), "action-1")
+
+        self.assertIn("unexpected response", str(raised.exception))
+        sock.close.assert_called_once()
+
+    @patch("frappe_whatsapp.utils.calling._read_ami_response")
+    @patch("frappe_whatsapp.utils.calling._send_ami_action")
+    @patch("frappe_whatsapp.utils.calling.socket.create_connection")
+    def test_ami_originate_rejects_mismatched_action_id(
+        self, mock_connect, mock_action, mock_read
+    ):
+        sock = MagicMock()
+        mock_connect.return_value = sock
+        mock_read.return_value = {}
+        mock_action.side_effect = [
+            {"Response": "Success"},
+            {"Response": "Success", "ActionID": "another-action"},
+            {"Response": "Goodbye"},
+        ]
+
+        with self.assertRaises(frappe.ValidationError) as raised:
+            _send_ami_originate(
+                self._ami_settings(), self._ami_call(), "action-1")
+
+        self.assertIn("unexpected action", str(raised.exception))
+        sock.close.assert_called_once()
+
+    @patch("frappe_whatsapp.utils.calling.socket.create_connection")
+    def test_ami_connection_timeout_does_not_expose_secret(self, mock_connect):
+        mock_connect.side_effect = socket.timeout("timed out")
+
+        with self.assertRaises(socket.timeout) as raised:
+            _send_ami_originate(
+                self._ami_settings(), self._ami_call(), "action-1")
+
+        self.assertNotIn("test-ami-secret", str(raised.exception))
 
     def test_default_calling_account_comes_from_permission_template(self):
         suffix = frappe.generate_hash(length=8)

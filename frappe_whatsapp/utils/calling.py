@@ -594,6 +594,31 @@ def _send_ami_action(sock, fields: dict[str, str]) -> dict[str, str]:
     return _read_ami_response(sock)
 
 
+def _require_ami_success(
+    response: dict[str, str],
+    *,
+    title: str,
+    fallback_message: str,
+    expected_action_id: str | None = None,
+) -> None:
+    if response.get("Response") != "Success":
+        frappe.throw(
+            response.get("Message") or fallback_message,
+            title=title,
+        )
+
+    response_action_id = response.get("ActionID")
+    if (
+        expected_action_id
+        and response_action_id
+        and response_action_id != expected_action_id
+    ):
+        frappe.throw(
+            _("AMI returned a response for an unexpected action."),
+            title=_("AMI Originate Failed"),
+        )
+
+
 def _send_ami_originate(settings, call_doc, action_id: str) -> dict[str, str]:
     if not settings.ami_host:
         frappe.throw(_("AMI Host is required."), title=_("Invalid Calling Settings"))
@@ -626,22 +651,24 @@ def _send_ami_originate(settings, call_doc, action_id: str) -> dict[str, str]:
             "Action": "Login",
             "Username": settings.ami_username,
             "Secret": password,
+            "Events": "off",
         })
-        if login_response.get("Response") == "Error":
-            frappe.throw(
-                login_response.get("Message") or _("AMI login failed."),
-                title=_("AMI Login Failed"),
-            )
+        _require_ami_success(
+            login_response,
+            title=_("AMI Login Failed"),
+            fallback_message=_("AMI login returned an unexpected response."),
+        )
 
         response = _send_ami_action(
             sock,
             _build_originate_payload(settings, call_doc, action_id),
         )
-        if response.get("Response") == "Error":
-            frappe.throw(
-                response.get("Message") or _("AMI originate failed."),
-                title=_("AMI Originate Failed"),
-            )
+        _require_ami_success(
+            response,
+            title=_("AMI Originate Failed"),
+            fallback_message=_("AMI originate returned an unexpected response."),
+            expected_action_id=action_id,
+        )
         return response
     finally:
         try:
