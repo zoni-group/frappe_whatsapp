@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:{template_name}-{language_code}",
+ "autoname": "format:{template_name}-{language_code}-{whatsapp_account}",
  "creation": "2022-10-28 13:39:09.887817",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -45,8 +45,7 @@
    "fieldname": "template_name",
    "fieldtype": "Data",
    "label": "Template Label",
-   "reqd": 1,
-   "unique": 1
+   "reqd": 1
   },
   {
    "fieldname": "template",
@@ -240,8 +239,8 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-10 20:25:02.443718",
- "modified_by": "Administrator",
+ "modified": "2026-07-14 15:30:38.275486",
+ "modified_by": "operez@zoni.edu",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Templates",
  "naming_rule": "Expression (old style)",

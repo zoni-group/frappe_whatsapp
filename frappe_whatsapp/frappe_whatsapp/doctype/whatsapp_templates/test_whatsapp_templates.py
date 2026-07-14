@@ -10,6 +10,7 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_templates.whatsapp_templates import (  # noqa: E501
     _COMPLIANCE_FIELDS,
+    _build_template_docname,
     _derive_sync_compliance,
     _footer_looks_like_unsubscribe,
     _normalize_meta_language_code,
@@ -42,6 +43,34 @@ class TestWhatsAppTemplates(FrappeTestCase):
             self.assertEqual(_resolve_language_link("es"), "es")
             self.assertEqual(_resolve_language_link("pt_BR"), "")
 
+    def test_template_docname_is_account_aware_and_length_bounded(self):
+        short_name = _build_template_docname(
+            "call_permission", "pt-BR", "Zoni WhatsApp")
+        self.assertEqual(
+            short_name,
+            "call_permission-pt_BR-Zoni WhatsApp",
+        )
+
+        long_name = _build_template_docname(
+            "template_" + ("x" * 140),
+            "en_US",
+            "account_" + ("y" * 140),
+        )
+        repeated_name = _build_template_docname(
+            "template_" + ("x" * 140),
+            "en_US",
+            "account_" + ("y" * 140),
+        )
+        other_account_name = _build_template_docname(
+            "template_" + ("x" * 140),
+            "en_US",
+            "other_" + ("y" * 140),
+        )
+
+        self.assertEqual(len(long_name), 140)
+        self.assertEqual(long_name, repeated_name)
+        self.assertNotEqual(long_name, other_account_name)
+
 
 class TestTemplateMetaSync(FrappeTestCase):
     def _make_account(self, suffix: str):
@@ -58,6 +87,25 @@ class TestTemplateMetaSync(FrappeTestCase):
             "app_secret": "test-secret",
             "webhook_verify_token": f"verify-{suffix}",
         }).insert(ignore_permissions=True)
+
+    @staticmethod
+    def _template_payload(
+        actual_name: str,
+        language_code: str,
+        template_id: str,
+        body: str,
+    ) -> dict:
+        return {
+            "id": template_id,
+            "name": actual_name,
+            "status": "APPROVED",
+            "language": language_code,
+            "category": "UTILITY",
+            "components": [
+                {"type": "BODY", "text": body},
+                {"type": "CALL_PERMISSION_REQUEST"},
+            ],
+        }
 
     @patch(f"{_MOD}._resolve_language_link", return_value="en")
     @patch(f"{_MOD}.get_paginated_data")
@@ -89,7 +137,10 @@ class TestTemplateMetaSync(FrappeTestCase):
             "name",
         )
         self.assertTrue(template_name)
-        template = frappe.get_doc("WhatsApp Templates", template_name)
+        template = cast(
+            WhatsAppTemplates,
+            frappe.get_doc("WhatsApp Templates", str(template_name)),
+        )
         self.assertEqual(template.whatsapp_account, account.name)
         self.assertEqual(template.status, "APPROVED")
         self.assertEqual(template.language_code, "en_US")
@@ -97,6 +148,139 @@ class TestTemplateMetaSync(FrappeTestCase):
         self.assertIn("1 imported", message)
         self.assertEqual(mock_validate.call_count, 1)
         self.assertEqual(mock_validate.call_args.args[0].name, account.name)
+
+    @patch(f"{_MOD}._resolve_language_link", return_value="en")
+    @patch(f"{_MOD}.get_paginated_data")
+    @patch(f"{_MOD}.validate_account_connection", return_value={"valid": True})
+    def test_same_template_name_imports_each_language_variant(
+        self, _mock_validate, mock_pages, _mock_language
+    ):
+        suffix = frappe.generate_hash(length=8)
+        account = self._make_account(suffix)
+        actual_name = f"call_permission_languages_{suffix}"
+        mock_pages.return_value = [
+            self._template_payload(
+                actual_name, "en_US", f"en-{suffix}", "Can we call you?"),
+            self._template_payload(
+                actual_name, "es", f"es-{suffix}", "¿Podemos llamarte?"),
+            self._template_payload(
+                actual_name, "pt-BR", f"pt-{suffix}", "Podemos ligar?"),
+        ]
+
+        first_message = fetch(account.name)
+        second_message = fetch(account.name)
+
+        templates = frappe.get_all(
+            "WhatsApp Templates",
+            filters={
+                "actual_name": actual_name,
+                "whatsapp_account": account.name,
+            },
+            fields=[
+                "name",
+                "template_name",
+                "language_code",
+                "id",
+                "template",
+                "is_call_permission_request",
+            ],
+            order_by="language_code asc",
+        )
+
+        self.assertIn("3 imported, 0 updated", first_message)
+        self.assertIn("0 imported, 3 updated", second_message)
+        self.assertEqual(len(templates), 3)
+        self.assertEqual(
+            {row.language_code for row in templates},
+            {"en_US", "es", "pt_BR"},
+        )
+        self.assertEqual(
+            {row.id for row in templates},
+            {f"en-{suffix}", f"es-{suffix}", f"pt-{suffix}"},
+        )
+        self.assertEqual(
+            {row.template for row in templates},
+            {"Can we call you?", "¿Podemos llamarte?", "Podemos ligar?"},
+        )
+        self.assertTrue(
+            all(row.template_name == actual_name for row in templates))
+        self.assertTrue(
+            all(row.is_call_permission_request for row in templates))
+
+    @patch(f"{_MOD}._resolve_language_link", return_value="en")
+    @patch(f"{_MOD}.get_paginated_data")
+    @patch(f"{_MOD}.validate_account_connection", return_value={"valid": True})
+    def test_same_name_and_language_are_isolated_by_account(
+        self, _mock_validate, mock_pages, _mock_language
+    ):
+        suffix = frappe.generate_hash(length=8)
+        first_account = self._make_account(f"first-{suffix}")
+        second_account = self._make_account(f"second-{suffix}")
+        actual_name = f"shared_template_{suffix}"
+        mock_pages.return_value = [self._template_payload(
+            actual_name, "en_US", f"template-{suffix}", "Shared body")]
+
+        fetch(first_account.name)
+        fetch(second_account.name)
+
+        templates = frappe.get_all(
+            "WhatsApp Templates",
+            filters={"actual_name": actual_name, "language_code": "en_US"},
+            fields=["name", "whatsapp_account"],
+        )
+        self.assertEqual(len(templates), 2)
+        self.assertEqual(
+            {row.whatsapp_account for row in templates},
+            {first_account.name, second_account.name},
+        )
+        self.assertEqual(len({row.name for row in templates}), 2)
+
+    @patch(f"{_MOD}._resolve_language_link", return_value="en")
+    @patch(f"{_MOD}.get_paginated_data")
+    @patch(f"{_MOD}.validate_account_connection", return_value={"valid": True})
+    def test_legacy_document_name_is_preserved_when_variants_are_added(
+        self, _mock_validate, mock_pages, _mock_language
+    ):
+        suffix = frappe.generate_hash(length=8)
+        account = self._make_account(suffix)
+        actual_name = f"legacy_call_permission_{suffix}"
+        legacy_name = f"{actual_name}-en_US"
+        legacy_doc = frappe.get_doc({
+            "doctype": "WhatsApp Templates",
+            "name": legacy_name,
+            "template_name": actual_name,
+            "actual_name": actual_name,
+            "status": "APPROVED",
+            "template": "Old English body",
+            "category": "UTILITY",
+            "language": "en",
+            "language_code": "en_US",
+            "whatsapp_account": account.name,
+        })
+        legacy_doc.db_insert()
+
+        mock_pages.return_value = [
+            self._template_payload(
+                actual_name, "en_US", f"en-{suffix}", "New English body"),
+            self._template_payload(
+                actual_name, "es", f"es-{suffix}", "Nuevo cuerpo"),
+        ]
+        message = fetch(account.name)
+
+        templates = frappe.get_all(
+            "WhatsApp Templates",
+            filters={
+                "actual_name": actual_name,
+                "whatsapp_account": account.name,
+            },
+            fields=["name", "language_code", "template"],
+        )
+        by_language = {row.language_code: row for row in templates}
+        self.assertIn("1 imported, 1 updated", message)
+        self.assertEqual(len(templates), 2)
+        self.assertEqual(by_language["en_US"].name, legacy_name)
+        self.assertEqual(by_language["en_US"].template, "New English body")
+        self.assertNotEqual(by_language["es"].name, legacy_name)
 
     @patch(f"{_MOD}.get_paginated_data", return_value=[])
     @patch(f"{_MOD}.validate_account_connection", return_value={"valid": True})
