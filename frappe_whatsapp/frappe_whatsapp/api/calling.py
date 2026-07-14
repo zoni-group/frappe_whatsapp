@@ -16,6 +16,7 @@ from frappe_whatsapp.utils.calling import (
 )
 from frappe_whatsapp.utils.calling import (
     validate_agent_extension,
+    validate_call_permission_language_code,
     validate_call_phone_number,
     validate_idempotency_key,
 )
@@ -202,6 +203,13 @@ def _response(
         response["failure_reason"] = service_result["failure_reason"]
     if service_result.get("idempotent_replay"):
         response["idempotent_replay"] = True
+    for fieldname in (
+        "requested_language_code",
+        "language_code",
+        "language_fallback",
+    ):
+        if fieldname in service_result:
+            response[fieldname] = service_result[fieldname]
     return response
 
 
@@ -262,8 +270,12 @@ def request_call_permission(
     source_app: str,
     idempotency_key: str,
     external_reference: str | None = None,
+    language_code: str | None = None,
 ) -> dict[str, Any]:
     _require_calling_api_role()
+    normalized_language_code = validate_call_permission_language_code(
+        language_code
+    )
     context, key = _mutation_context(
         phone_number=phone_number,
         whatsapp_account=whatsapp_account,
@@ -279,6 +291,7 @@ def request_call_permission(
         source_app=str(context["source_app"]),
         external_reference=context["external_reference"],
         idempotency_key=key,
+        language_code=normalized_language_code,
     )
     return _response(context=context, service_result=result, idempotency_key=key)
 

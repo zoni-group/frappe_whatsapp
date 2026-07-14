@@ -14,8 +14,10 @@ from frappe.utils import now_datetime
 from frappe_whatsapp.utils.calling import (
     _build_originate_payload,
     _get_account,
+    _get_idempotent_call,
     _permission_action_allowed,
     _read_ami_banner,
+    _resolve_call_permission_template,
     _send_ami_originate,
     _send_permission_template,
     get_call_state,
@@ -24,6 +26,7 @@ from frappe_whatsapp.utils.calling import (
     parse_permission_state,
     request_call_permission,
     start_outbound_call,
+    validate_call_permission_language_code,
 )
 
 if TYPE_CHECKING:
@@ -334,6 +337,140 @@ class TestWhatsAppCallingAMI(FrappeTestCase):
         self.assertEqual(_get_account().name, calling_account.name)
 
 
+class TestCallPermissionTemplateLanguage(FrappeTestCase):
+    def setUp(self):
+        frappe.set_user("Administrator")
+        for doctype in ["whatsapp_account", "whatsapp_templates"]:
+            frappe.reload_doc("frappe_whatsapp", "doctype", doctype)
+
+        suffix = frappe.generate_hash(length=8)
+        self.account = frappe.get_doc({
+            "doctype": "WhatsApp Account",
+            "account_name": f"Language Account {suffix}",
+            "status": "Active",
+            "phone_id": f"language-phone-{suffix}",
+            "webhook_verify_token": f"language-verify-{suffix}",
+        }).insert(ignore_permissions=True)
+        self.family = f"call_permission_languages_{suffix}"
+        self.templates = {
+            code: self._create_template(code, body)
+            for code, body in {
+                "en_US": "Can we call you?",
+                "es": "¿Podemos llamarte?",
+                "pt_BR": "Podemos ligar?",
+            }.items()
+        }
+        self.settings = SimpleNamespace(
+            call_permission_template=self.templates["en_US"].name
+        )
+
+    def _create_template(
+        self,
+        language_code: str,
+        body: str,
+        *,
+        family: str | None = None,
+        account: Any = None,
+        status: str = "APPROVED",
+        is_call_permission_request: int = 1,
+    ):
+        language = (
+            "pt-BR"
+            if language_code == "pt_PT"
+            else language_code.replace("_", "-")
+        )
+        with patch(
+            "frappe_whatsapp.frappe_whatsapp.doctype."
+            "whatsapp_templates.whatsapp_templates."
+            "WhatsAppTemplates.after_insert"
+        ):
+            return frappe.get_doc({
+                "doctype": "WhatsApp Templates",
+                "template_name": family or self.family,
+                "actual_name": family or self.family,
+                "template": body,
+                "language": language,
+                "language_code": language_code,
+                "category": "UTILITY",
+                "status": status,
+                "whatsapp_account": (account or self.account).name,
+                "is_call_permission_request": is_call_permission_request,
+            }).insert(ignore_permissions=True)
+
+    def test_language_code_normalization_and_validation(self):
+        self.assertEqual(
+            validate_call_permission_language_code("EN"), "en"
+        )
+        self.assertEqual(
+            validate_call_permission_language_code("pt-br"), "pt_BR"
+        )
+        self.assertEqual(
+            validate_call_permission_language_code("zh-hans"), "zh_Hans"
+        )
+        self.assertIsNone(validate_call_permission_language_code(None))
+
+        for invalid in (" en", "e", "english", "en_US_extra", "es/US"):
+            with self.assertRaises(frappe.ValidationError):
+                validate_call_permission_language_code(invalid)
+
+    def test_resolves_exact_and_base_language_variants(self):
+        for requested, expected in (
+            ("ES", "es"),
+            ("pt", "pt_BR"),
+            ("pt-br", "pt_BR"),
+            ("EN", "en_US"),
+        ):
+            template, normalized, fallback = _resolve_call_permission_template(
+                self.settings, self.account.name, requested
+            )
+            self.assertEqual(template.name, self.templates[expected].name)
+            self.assertFalse(fallback)
+            self.assertEqual(
+                normalized,
+                validate_call_permission_language_code(requested),
+            )
+
+    def test_missing_unsupported_and_unavailable_region_use_default(self):
+        for requested in (None, "fr", "es_MX"):
+            template, normalized, fallback = _resolve_call_permission_template(
+                self.settings, self.account.name, requested
+            )
+            self.assertEqual(template.name, self.templates["en_US"].name)
+            self.assertTrue(fallback)
+            self.assertEqual(
+                normalized,
+                validate_call_permission_language_code(requested),
+            )
+
+    def test_resolution_excludes_ineligible_templates_and_ambiguous_bases(self):
+        suffix = frappe.generate_hash(length=8)
+        other_account = frappe.get_doc({
+            "doctype": "WhatsApp Account",
+            "account_name": f"Other Language Account {suffix}",
+            "status": "Active",
+            "phone_id": f"other-language-phone-{suffix}",
+            "webhook_verify_token": f"other-language-verify-{suffix}",
+        }).insert(ignore_permissions=True)
+        self._create_template(
+            "fr", "Wrong family", family=f"other_{self.family}"
+        )
+        self._create_template(
+            "fr", "Wrong account", account=other_account
+        )
+        self._create_template("de", "Not approved", status="PENDING")
+        self._create_template(
+            "it", "Not a permission request", is_call_permission_request=0
+        )
+        self._create_template("pt_PT", "Podemos telefonar?")
+
+        for requested in ("fr", "de", "it", "pt"):
+            template, _normalized, fallback = _resolve_call_permission_template(
+                self.settings, self.account.name, requested
+            )
+            self.assertEqual(template.name, self.templates["en_US"].name)
+            self.assertTrue(fallback)
+
+
 class TestWhatsAppCallingActions(FrappeTestCase):
     def setUp(self):
         frappe.set_user("Administrator")
@@ -398,6 +535,17 @@ class TestWhatsAppCallingActions(FrappeTestCase):
             ),
         )
 
+    @staticmethod
+    def _default_template_resolution():
+        return (
+            SimpleNamespace(
+                name="call_permission-en_US",
+                language_code="en_US",
+            ),
+            None,
+            True,
+        )
+
     def test_permission_action_parses_stored_json(self):
         permission = SimpleNamespace(raw_meta_state='{"actions": [{'
             '"action_name": "send_call_permission_request", '
@@ -417,7 +565,8 @@ class TestWhatsAppCallingActions(FrappeTestCase):
         with (
             patches[0], patches[1], patches[2], patches[3],
             patch(
-                "frappe_whatsapp.utils.calling._validate_call_permission_template"
+                "frappe_whatsapp.utils.calling._resolve_call_permission_template",
+                return_value=self._default_template_resolution(),
             ),
             patch(
                 "frappe_whatsapp.utils.calling.filelock",
@@ -425,7 +574,7 @@ class TestWhatsAppCallingActions(FrappeTestCase):
             ),
             patch(
                 "frappe_whatsapp.utils.calling._send_permission_template",
-                side_effect=lambda *, call_doc, settings: {
+                side_effect=lambda *, call_doc, template: {
                     "status": call_doc.status,
                     "call": call_doc.name,
                     "message": "sent",
@@ -468,7 +617,8 @@ class TestWhatsAppCallingActions(FrappeTestCase):
         with (
             patches[0], patches[1], patches[2], patches[3],
             patch(
-                "frappe_whatsapp.utils.calling._validate_call_permission_template"
+                "frappe_whatsapp.utils.calling._resolve_call_permission_template",
+                return_value=self._default_template_resolution(),
             ),
             patch(
                 "frappe_whatsapp.utils.calling.filelock",
@@ -507,7 +657,8 @@ class TestWhatsAppCallingActions(FrappeTestCase):
                 return_value=permission,
             ),
             patch(
-                "frappe_whatsapp.utils.calling._validate_call_permission_template"
+                "frappe_whatsapp.utils.calling._resolve_call_permission_template",
+                return_value=self._default_template_resolution(),
             ),
             patch(
                 "frappe_whatsapp.utils.calling.filelock",
@@ -515,7 +666,7 @@ class TestWhatsAppCallingActions(FrappeTestCase):
             ),
             patch(
                 "frappe_whatsapp.utils.calling._send_permission_template",
-                side_effect=lambda *, call_doc, settings: {
+                side_effect=lambda *, call_doc, template: {
                     "ok": True,
                     "status": call_doc.status,
                     "call": call_doc.name,
@@ -551,7 +702,8 @@ class TestWhatsAppCallingActions(FrappeTestCase):
         with (
             patches[0], patches[1], patches[2], patches[3],
             patch(
-                "frappe_whatsapp.utils.calling._validate_call_permission_template"
+                "frappe_whatsapp.utils.calling._resolve_call_permission_template",
+                return_value=self._default_template_resolution(),
             ),
             patch(
                 "frappe_whatsapp.utils.calling.filelock",
@@ -809,6 +961,110 @@ class TestWhatsAppCallingActions(FrappeTestCase):
         self.assertEqual(frappe.local.response.get("http_status_code"), 409)
         frappe.local.response.pop("http_status_code", None)
 
+    def test_permission_idempotency_includes_resolved_template(self):
+        call_doc = SimpleNamespace(
+            action_type="Permission Request",
+            phone_number="15551234576",
+            whatsapp_account="account-a",
+            agent_extension="9001",
+            permission_request_message="MESSAGE-ES",
+        )
+
+        def get_value(doctype, _filters, fieldname=None):
+            if doctype == "WhatsApp Call":
+                return "CALL-ES"
+            if doctype == "WhatsApp Message" and fieldname == "template":
+                return "call_permission-es-account-a"
+            return None
+
+        with patch(
+            "frappe_whatsapp.utils.calling.frappe.db.get_value",
+            side_effect=get_value,
+        ), patch(
+            "frappe_whatsapp.utils.calling.frappe.get_doc",
+            return_value=call_doc,
+        ):
+            replay = _get_idempotent_call(
+                idempotency_key="permission-language-1234",
+                action_type="Permission Request",
+                phone_number="15551234576",
+                whatsapp_account="account-a",
+                agent_extension="9001",
+                permission_template="call_permission-es-account-a",
+            )
+            self.assertIs(replay, call_doc)
+
+            with self.assertRaises(frappe.ValidationError):
+                _get_idempotent_call(
+                    idempotency_key="permission-language-1234",
+                    action_type="Permission Request",
+                    phone_number="15551234576",
+                    whatsapp_account="account-a",
+                    agent_extension="9001",
+                    permission_template="call_permission-en_US-account-a",
+                )
+
+        self.assertEqual(frappe.local.response.get("http_status_code"), 409)
+        frappe.local.response.pop("http_status_code", None)
+
+    def test_pending_request_reports_language_already_sent(self):
+        account = self._create_account()
+        permission = self._permission()
+        selected_template = SimpleNamespace(
+            name="call_permission-es-account-a",
+            language_code="es",
+        )
+        pending_template = SimpleNamespace(
+            name="call_permission-en_US-account-a",
+            language_code="en_US",
+        )
+        pending = SimpleNamespace(
+            name="CALL-PENDING-LANGUAGE",
+            status="Permission Requested",
+            idempotency_key="existing-language-request-1234",
+            permission_request_message="MESSAGE-EN",
+        )
+
+        with (
+            patch(
+                "frappe_whatsapp.utils.calling._ensure_enabled",
+                return_value=SimpleNamespace(enabled=1),
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling._get_account",
+                return_value=account,
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling._resolve_call_permission_template",
+                return_value=(selected_template, "es", False),
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling.refresh_permission_state",
+                return_value=permission,
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling._find_pending_call",
+                return_value=pending,
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling._get_call_permission_template",
+                return_value=pending_template,
+            ),
+            patch(
+                "frappe_whatsapp.utils.calling.filelock",
+                side_effect=lambda *_args, **_kwargs: nullcontext(),
+            ),
+        ):
+            result = request_call_permission(
+                phone_number="15551234581",
+                agent_extension="9001",
+                language_code="es",
+            )
+
+        self.assertEqual(result["requested_language_code"], "es")
+        self.assertEqual(result["language_code"], "en_US")
+        self.assertTrue(result["language_fallback"])
+
     def test_ami_failure_is_returned_and_persisted(self):
         account = self._create_account()
         permission = self._permission("Permanent", can_request=False)
@@ -857,12 +1113,10 @@ class TestWhatsAppCallingActions(FrappeTestCase):
 
     @patch("frappe_whatsapp.utils.calling.publish_call_update")
     @patch("frappe_whatsapp.utils.calling._upsert_permission")
-    @patch("frappe_whatsapp.utils.calling._validate_call_permission_template")
     @patch("frappe_whatsapp.utils.calling.frappe.get_doc")
     def test_permission_message_keeps_crm_routing_fields(
-        self, mock_get_doc, mock_validate_template, _mock_upsert, _mock_publish
+        self, mock_get_doc, _mock_upsert, _mock_publish
     ):
-        mock_validate_template.return_value = SimpleNamespace(name="call-template")
         message_doc = SimpleNamespace(
             name="MESSAGE-1",
             message_id="wamid.test",
@@ -884,14 +1138,19 @@ class TestWhatsAppCallingActions(FrappeTestCase):
 
         _send_permission_template(
             call_doc=cast(Any, call_doc),
-            settings=cast(
-                Any, SimpleNamespace(call_permission_template="call-template")
+            template=cast(
+                Any,
+                SimpleNamespace(
+                    name="call-template",
+                    language_code="es",
+                ),
             ),
         )
 
         message_values = mock_get_doc.call_args.args[0]
         self.assertEqual(message_values["source_app"], "crm-app")
         self.assertEqual(message_values["external_reference"], "lead-123")
+        self.assertEqual(message_values["template"], "call-template")
         message_doc.insert.assert_called_once_with(ignore_permissions=True)
 
     @patch("frappe_whatsapp.utils.calling.refresh_permission_state")

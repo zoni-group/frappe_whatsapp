@@ -61,7 +61,7 @@ class TestWhatsAppMessage(FrappeTestCase):
     def test_parameterless_template_omits_components(
         self, mock_get_doc, _mock_compliance, _mock_rules
     ):
-        mock_get_doc.return_value = self._template()
+        mock_get_doc.return_value = self._template(language_code="pt_BR")
         message = self._template_message()
 
         with patch.object(message, "notify") as mock_notify:
@@ -69,6 +69,7 @@ class TestWhatsAppMessage(FrappeTestCase):
 
         payload = mock_notify.call_args.args[0]
         self.assertNotIn("components", payload["template"])
+        self.assertEqual(payload["template"]["language"]["code"], "pt_BR")
 
     @patch(
         "frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message."
