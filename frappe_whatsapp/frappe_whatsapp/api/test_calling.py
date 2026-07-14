@@ -92,6 +92,9 @@ class TestCRMCallingAPI(FrappeTestCase):
             "message": "Call permission request sent.",
             "call": "CALL-1",
             "retryable": False,
+            "requested_language_code": "pt_BR",
+            "language_code": "pt_BR",
+            "language_fallback": False,
         }
 
         result = request_call_permission(
@@ -101,6 +104,7 @@ class TestCRMCallingAPI(FrappeTestCase):
             source_app="crm-app",
             external_reference="lead-123",
             idempotency_key="permission-request-1234",
+            language_code="PT-br",
         )
 
         self.assertEqual(result["status"], "permission_pending")
@@ -108,8 +112,33 @@ class TestCRMCallingAPI(FrappeTestCase):
         self.assertEqual(result["idempotency_key"], "permission-request-1234")
         self.assertIsNone(result["call_id"])
         self.assertNotIn("agent_email", result)
+        self.assertEqual(result["requested_language_code"], "pt_BR")
+        self.assertEqual(result["language_code"], "pt_BR")
+        self.assertFalse(result["language_fallback"])
         self.assertEqual(mock_request.call_args.kwargs["agent_extension"], "9876")
+        self.assertEqual(mock_request.call_args.kwargs["language_code"], "pt_BR")
         self.assertNotIn("agent_user", mock_request.call_args.kwargs)
+
+    @patch(
+        "frappe_whatsapp.frappe_whatsapp.api.calling."
+        "request_service_call_permission"
+    )
+    @patch("frappe_whatsapp.frappe_whatsapp.api.calling.frappe.db.get_value")
+    def test_invalid_language_is_rejected_before_database_or_service(
+        self, mock_get_value, mock_request
+    ):
+        with self.assertRaises(frappe.ValidationError):
+            request_call_permission(
+                phone_number="15551234567",
+                whatsapp_account="account-a",
+                agent_extension="9876",
+                source_app="crm-app",
+                idempotency_key="permission-request-5678",
+                language_code="en_US_extra",
+            )
+
+        mock_get_value.assert_not_called()
+        mock_request.assert_not_called()
 
     @patch("frappe_whatsapp.frappe_whatsapp.api.calling." "start_service_outbound_call")
     @patch("frappe_whatsapp.frappe_whatsapp.api.calling.frappe.db.get_value")

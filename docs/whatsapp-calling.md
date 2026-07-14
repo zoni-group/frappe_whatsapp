@@ -100,7 +100,32 @@ POST /api/method/frappe_whatsapp.frappe_whatsapp.api.calling.request_call_permis
   "agent_extension": "847",
   "source_app": "crm-client-app",
   "external_reference": "lead-uid",
+  "language_code": "pt",
   "idempotency_key": "9a028213-4b64-4963-9d66-f5c8fe824e59"
+}
+```
+
+`language_code` is optional and applies only to the permission request. It
+accepts case-insensitive base codes such as `EN`, `es`, and `pt`, plus Meta-style
+locales such as `en-US` or `pt_BR`. The API normalizes separators and casing,
+then selects an approved language variant with the same Meta template name and
+WhatsApp account as the configured default template. A regional request must
+match that region exactly; a base code can select the sole approved regional
+variant (`pt` selects `pt_BR`).
+
+When the field is omitted, unsupported, ambiguous, or has no matching approved
+variant, the configured default template is sent. Malformed codes are rejected.
+The response reports the normalized request, the language actually sent, and
+whether the configured fallback was used:
+
+```json
+{
+  "message": {
+    "status": "permission_pending",
+    "requested_language_code": "pt",
+    "language_code": "pt_BR",
+    "language_fallback": false
+  }
 }
 ```
 
@@ -114,9 +139,10 @@ correlation. The account/phone lock prevents duplicate permission templates.
 POST /api/method/frappe_whatsapp.frappe_whatsapp.api.calling.start_outbound_call
 ```
 
-The request body uses the same fields as the permission request, with a new
-idempotency UUID. The service rechecks permission with Meta immediately before
-AMI origination and requires Meta's `start_call` action to be allowed.
+The request body uses the common fields with a new idempotency UUID;
+`language_code` is not used when starting a call. The service rechecks
+permission with Meta immediately before AMI origination and requires Meta's
+`start_call` action to be allowed.
 
 A successful originate response uses status `pbx_queued`:
 

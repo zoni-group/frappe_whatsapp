@@ -26,10 +26,10 @@
    "label": "Enabled"
   },
   {
-   "description": "Approved WhatsApp template containing the CALL_PERMISSION_REQUEST component.",
+   "description": "Default approved CALL_PERMISSION_REQUEST template. Approved language variants with the same Meta template name and account are selected by the calling API.",
    "fieldname": "call_permission_template",
    "fieldtype": "Link",
-   "label": "Call Permission Template",
+   "label": "Default Call Permission Template",
    "options": "WhatsApp Templates"
   },
   {
@@ -102,8 +102,8 @@
  "grid_page_length": 50,
  "issingle": 1,
  "links": [],
- "modified": "2026-07-10 20:18:55.401007",
- "modified_by": "Administrator",
+ "modified": "2026-07-14 16:32:00.906934",
+ "modified_by": "operez@zoni.edu",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Calling Settings",
  "owner": "Administrator",

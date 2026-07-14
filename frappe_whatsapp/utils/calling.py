@@ -43,6 +43,10 @@ _IDEMPOTENCY_KEY_PATTERN = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,139}$",
     re.ASCII,
 )
+_LANGUAGE_CODE_PATTERN = re.compile(
+    r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?$",
+    re.ASCII,
+)
 
 PermissionStatus = Literal[
     "No Permission", "Temporary", "Permanent", "Rejected", "Expired", "Unknown"
@@ -117,6 +121,40 @@ def validate_idempotency_key(idempotency_key: Any) -> str:
             title=_("Invalid Idempotency Key"),
         )
     return key
+
+
+def validate_call_permission_language_code(language_code: Any) -> str | None:
+    """Validate and normalize a CRM/Meta language code.
+
+    Base language codes are lower-case. A two-letter region is upper-case and
+    Meta's accepted underscore separator is used for stored/request payloads.
+    """
+    if language_code in (None, ""):
+        return None
+
+    raw_code = str(language_code)
+    code = raw_code.strip()
+    if code != raw_code or not _LANGUAGE_CODE_PATTERN.fullmatch(code):
+        frappe.throw(
+            _(
+                "Language Code must be a 2 or 3 letter language, optionally "
+                "followed by a region or script."
+            ),
+            title=_("Invalid Language Code"),
+        )
+
+    parts = re.split(r"[-_]", code)
+    normalized = parts[0].lower()
+    if len(parts) == 2:
+        qualifier = parts[1]
+        if len(qualifier) == 2 and qualifier.isalpha():
+            qualifier = qualifier.upper()
+        elif len(qualifier) == 4 and qualifier.isalpha():
+            qualifier = qualifier.title()
+        else:
+            qualifier = qualifier.lower()
+        normalized = f"{normalized}_{qualifier}"
+    return normalized
 
 
 def _get_settings() -> WhatsAppCallingSettings:
@@ -400,6 +438,7 @@ def _get_idempotent_call(
     phone_number: str,
     whatsapp_account: str,
     agent_extension: str,
+    permission_template: str | None = None,
 ) -> WhatsAppCall | None:
     if not idempotency_key:
         return None
@@ -434,6 +473,21 @@ def _get_idempotent_call(
             _("Idempotency Key has already been used for another call action."),
             title=_("Idempotency Conflict"),
         )
+
+    if permission_template:
+        actual_template = None
+        if call_doc.permission_request_message:
+            actual_template = frappe.db.get_value(
+                "WhatsApp Message",
+                call_doc.permission_request_message,
+                "template",
+            )
+        if str(actual_template or "") != permission_template:
+            frappe.local.response["http_status_code"] = 409
+            frappe.throw(
+                _("Idempotency Key has already been used for another call action."),
+                title=_("Idempotency Conflict"),
+            )
     return call_doc
 
 
@@ -760,22 +814,139 @@ def _validate_call_permission_template(
             title=_("Invalid Call Permission Template"),
         )
 
-    template_account = str(template.whatsapp_account or "")
-    if template_account and template_account != account_name:
+    if str(template.status or "").upper() != "APPROVED":
         frappe.throw(
-            _("The call-permission template belongs to WhatsApp Account {0}.").format(
-                template_account
-            ),
+            _("The configured call-permission template is not approved."),
+            title=_("Invalid Call Permission Template"),
+        )
+
+    if not template.language_code:
+        frappe.throw(
+            _("The configured call-permission template has no language code."),
+            title=_("Invalid Call Permission Template"),
+        )
+
+    template_account = str(template.whatsapp_account or "")
+    if template_account != account_name:
+        frappe.throw(
+            _(
+                "The call-permission template must belong to WhatsApp Account {0}."
+            ).format(account_name),
             title=_("Invalid Call Permission Template"),
         )
 
     return template
 
 
-def _send_permission_template(
-    *, call_doc: WhatsAppCall, settings: WhatsAppCallingSettings
+def _resolve_call_permission_template(
+    settings: WhatsAppCallingSettings,
+    account_name: str,
+    language_code: Any = None,
+) -> tuple[WhatsAppTemplates, str | None, bool]:
+    """Resolve an approved language variant from the configured family.
+
+    The configured template is always the default. Regional requests require
+    an exact regional variant; base-only requests may select one unambiguous
+    regional variant from the same Meta template family.
+    """
+    requested = validate_call_permission_language_code(language_code)
+    default_template = _validate_call_permission_template(settings, account_name)
+    default_code = validate_call_permission_language_code(
+        default_template.language_code
+    )
+    assert default_code is not None
+
+    if requested is None:
+        return default_template, None, True
+    if requested == default_code:
+        return default_template, requested, False
+
+    family_name = str(
+        default_template.actual_name or default_template.template_name or ""
+    )
+    rows = frappe.get_all(
+        "WhatsApp Templates",
+        filters={
+            "actual_name": family_name,
+            "whatsapp_account": account_name,
+            "status": "APPROVED",
+            "is_call_permission_request": 1,
+        },
+        fields=["name", "language_code"],
+    )
+
+    candidates: list[tuple[str, str]] = []
+    for row in rows:
+        try:
+            candidate_code = validate_call_permission_language_code(
+                row.language_code
+            )
+        except frappe.ValidationError:
+            continue
+        if candidate_code:
+            candidates.append((str(row.name), candidate_code))
+
+    exact_matches = [name for name, code in candidates if code == requested]
+    if len(exact_matches) == 1:
+        return cast(
+            "WhatsAppTemplates",
+            frappe.get_doc("WhatsApp Templates", exact_matches[0]),
+        ), requested, False
+
+    # Do not substitute one regional variant for another. A base-only request
+    # can use the default variant or a single unambiguous family variant.
+    if "_" not in requested:
+        if default_code.split("_", 1)[0] == requested:
+            return default_template, requested, False
+        base_matches = [
+            name
+            for name, code in candidates
+            if code.split("_", 1)[0] == requested
+        ]
+        if len(base_matches) == 1:
+            return cast(
+                "WhatsAppTemplates",
+                frappe.get_doc("WhatsApp Templates", base_matches[0]),
+            ), requested, False
+
+    return default_template, requested, True
+
+
+def _call_permission_language_result(
+    *,
+    requested_language_code: str | None,
+    template: WhatsAppTemplates,
+    language_fallback: bool,
 ) -> dict[str, Any]:
-    template = _validate_call_permission_template(settings, call_doc.whatsapp_account)
+    return {
+        "requested_language_code": requested_language_code,
+        "language_code": str(template.language_code or ""),
+        "language_fallback": language_fallback,
+    }
+
+
+def _get_call_permission_template(
+    call_doc: WhatsAppCall,
+    fallback_template: WhatsAppTemplates,
+) -> WhatsAppTemplates:
+    if not call_doc.permission_request_message:
+        return fallback_template
+    template_name = frappe.db.get_value(
+        "WhatsApp Message",
+        call_doc.permission_request_message,
+        "template",
+    )
+    if not template_name:
+        return fallback_template
+    return cast(
+        "WhatsAppTemplates",
+        frappe.get_doc("WhatsApp Templates", str(template_name)),
+    )
+
+
+def _send_permission_template(
+    *, call_doc: WhatsAppCall, template: WhatsAppTemplates
+) -> dict[str, Any]:
     message_doc = cast("WhatsAppMessage", frappe.get_doc({
         "doctype": "WhatsApp Message",
         "to": call_doc.phone_number,
@@ -820,6 +991,10 @@ def _send_permission_template(
 
 def _permission_request_replay_result(
     call_doc: WhatsAppCall,
+    *,
+    requested_language_code: str | None,
+    template: WhatsAppTemplates,
+    language_fallback: bool,
 ) -> dict[str, Any]:
     waiting = call_doc.status == "Permission Requested"
     return {
@@ -831,6 +1006,11 @@ def _permission_request_replay_result(
         "retryable": False,
         "idempotency_key": call_doc.idempotency_key,
         "idempotent_replay": True,
+        **_call_permission_language_result(
+            requested_language_code=requested_language_code,
+            template=template,
+            language_fallback=language_fallback,
+        ),
     }
 
 
@@ -844,6 +1024,7 @@ def request_call_permission(
     source_app: str | None = None,
     external_reference: str | None = None,
     idempotency_key: str | None = None,
+    language_code: str | None = None,
 ) -> dict[str, Any]:
     """Send one explicit call-permission request without starting a call."""
     resolved_agent_user, resolved_extension = _resolve_agent_identity(
@@ -857,7 +1038,14 @@ def request_call_permission(
     settings = _ensure_enabled()
     account = _get_account(whatsapp_account)
     account_name = str(account.name)
-    _validate_call_permission_template(settings, account_name)
+    template, requested_language_code, language_fallback = (
+        _resolve_call_permission_template(settings, account_name, language_code)
+    )
+    language_result = _call_permission_language_result(
+        requested_language_code=requested_language_code,
+        template=template,
+        language_fallback=language_fallback,
+    )
 
     lock_context = filelock(
         _permission_request_lock_name(account_name, number),
@@ -873,9 +1061,19 @@ def request_call_permission(
                 phone_number=number,
                 whatsapp_account=account_name,
                 agent_extension=resolved_extension,
+                permission_template=str(template.name),
             )
             if replay:
-                return _permission_request_replay_result(replay)
+                replay_template = _get_call_permission_template(replay, template)
+                return _permission_request_replay_result(
+                    replay,
+                    requested_language_code=requested_language_code,
+                    template=replay_template,
+                    language_fallback=(
+                        language_fallback
+                        or str(replay_template.name) != str(template.name)
+                    ),
+                )
 
             try:
                 permission = refresh_permission_state(number, account_name)
@@ -893,6 +1091,7 @@ def request_call_permission(
                     "can_request_permission": False,
                     "can_call": False,
                     "idempotency_key": idempotency_key,
+                    **language_result,
                 }
             if permission_is_active(permission):
                 can_start = _permission_action_allowed(permission, "start_call")
@@ -915,6 +1114,7 @@ def request_call_permission(
                     "waiting_for_permission": False,
                     "retryable": False,
                     "idempotency_key": idempotency_key,
+                    **language_result,
                 }
 
             pending = _find_pending_call(
@@ -922,6 +1122,9 @@ def request_call_permission(
                 whatsapp_account=account_name,
             )
             if pending:
+                pending_template = _get_call_permission_template(
+                    pending, template
+                )
                 return {
                     "ok": True,
                     "status": pending.status,
@@ -932,6 +1135,14 @@ def request_call_permission(
                     "waiting_for_permission": True,
                     "retryable": False,
                     "idempotency_key": pending.idempotency_key,
+                    **_call_permission_language_result(
+                        requested_language_code=requested_language_code,
+                        template=pending_template,
+                        language_fallback=(
+                            language_fallback
+                            or str(pending_template.name) != str(template.name)
+                        ),
+                    ),
                 }
 
             if (
@@ -951,6 +1162,7 @@ def request_call_permission(
                     "waiting_for_permission": False,
                     "retryable": False,
                     "idempotency_key": idempotency_key,
+                    **language_result,
                 }
 
             call_doc = _create_call(
@@ -967,8 +1179,9 @@ def request_call_permission(
             )
             result = _send_permission_template(
                 call_doc=call_doc,
-                settings=settings,
+                template=template,
             )
+            result.update(language_result)
 
             def release_lock():
                 lock_context.__exit__(None, None, None)
@@ -991,6 +1204,7 @@ def request_call_permission(
             "waiting_for_permission": False,
             "retryable": True,
             "idempotency_key": idempotency_key,
+            **language_result,
         }
 
 
