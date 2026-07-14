@@ -11,6 +11,10 @@
   "whatsapp_account",
   "agent_user",
   "agent_extension",
+  "action_type",
+  "source_app",
+  "external_reference",
+  "idempotency_key",
   "permission_request_message",
   "ami_action_id",
   "requested_at",
@@ -70,6 +74,32 @@
    "label": "Agent Extension"
   },
   {
+   "fieldname": "action_type",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Action Type",
+   "options": "Permission Request\nOutbound Call"
+  },
+  {
+   "fieldname": "source_app",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Source App",
+   "options": "WhatsApp Client App"
+  },
+  {
+   "fieldname": "external_reference",
+   "fieldtype": "Data",
+   "label": "External Reference",
+   "search_index": 1
+  },
+  {
+   "fieldname": "idempotency_key",
+   "fieldtype": "Data",
+   "label": "Idempotency Key",
+   "unique": 1
+  },
+  {
    "fieldname": "permission_request_message",
    "fieldtype": "Link",
    "label": "Permission Request Message",
@@ -113,7 +143,7 @@
  ],
  "grid_page_length": 50,
  "links": [],
- "modified": "2026-07-10 20:22:33.000249",
+ "modified": "2026-07-14 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Call",
