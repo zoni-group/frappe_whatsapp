@@ -1,5 +1,8 @@
 # WhatsApp Outbound Calling
 
+For the production `zoni_crm_service` values and an end-to-end curl walkthrough,
+see [Zoni CRM Service: WhatsApp outbound calling integration](./zoni-crm-whatsapp-calling.md).
+
 `frappe_whatsapp` can request WhatsApp call permission, poll Meta for the
 permission state, and ask Asterisk/FreePBX to originate an outbound call.
 
