@@ -188,6 +188,9 @@ class TestStatusNormalization(FrappeTestCase):
     def test_marked_as_read_maps_to_read(self):
         self.assertEqual(_normalize_status("marked as read"), "read")
 
+    def test_played_maps_to_read(self):
+        self.assertEqual(_normalize_status("played"), "read")
+
     def test_none_maps_to_unknown(self):
         self.assertEqual(_normalize_status(None), "unknown")
 
@@ -546,6 +549,7 @@ class TestMaybeEnqueueStatusNotification(FrappeTestCase):
             ("sent", "sent"),
             ("delivered", "delivered"),
             ("read", "read"),
+            ("played", "read"),
             ("marked as read", "read"),
         ]:
             doc = _mock_msg(
@@ -726,6 +730,57 @@ class TestDeliverStatusNotification(FrappeTestCase):
         self.assertIsNone(log.next_retry_at)
         self.assertIn("ReadTimeout", str(log.error))
         mock_log_error.assert_called_once()
+
+    @patch("frappe_whatsapp.utils.status_notifier.requests.post")
+    def test_exhausted_502_logs_with_short_title_and_preserves_response(
+        self, mock_post
+    ):
+        response_body = '{"ok":false,"message":"' + ("x" * 300) + '"}'
+        mock_post.return_value = MagicMock(
+            ok=False,
+            status_code=502,
+            text=response_body,
+        )
+
+        log = self._log(
+            delivery_status="Failed",
+            attempts=MAX_RETRY_ATTEMPTS - 1,
+            next_retry_at=add_to_date(now_datetime(), minutes=-1),
+        )
+        error_log_title = (
+            f"WhatsApp Status Notifier failure for log {log.name}"
+        )
+        self.addCleanup(frappe.db.commit)
+        self.addCleanup(
+            frappe.db.delete,
+            "Error Log",
+            {"method": error_log_title},
+        )
+
+        deliver_status_notification(str(log.name))
+
+        log.reload()
+        self.assertEqual(log.delivery_status, "Failed")
+        self.assertEqual(log.attempts, MAX_RETRY_ATTEMPTS)
+        self.assertEqual(log.response_code, "502")
+        self.assertEqual(log.response_body, response_body[:500])
+        self.assertEqual(
+            log.error,
+            f"HTTP 502: {response_body[:100]}",
+        )
+        self.assertIsNone(log.next_retry_at)
+
+        error_log_name = frappe.db.get_value(
+            "Error Log",
+            {"method": error_log_title},
+            "name",
+            order_by="creation desc",
+        )
+        self.assertIsNotNone(error_log_name)
+        error_log = frappe.get_doc("Error Log", str(error_log_name))
+        self.assertLessEqual(len(str(error_log.method)), 140)
+        self.assertIn(str(log.name), str(error_log.error))
+        self.assertIn("HTTP 502", str(error_log.error))
 
     @patch("frappe_whatsapp.utils.status_notifier.frappe.log_error")
     @patch("frappe_whatsapp.utils.status_notifier.requests.post")

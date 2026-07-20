@@ -25,8 +25,8 @@ points into this subsystem:
     on_whatsapp_message_on_update(doc)
         Fires on every subsequent save.  Uses get_doc_before_save() to
         detect status transitions coming from Meta delivery callbacks
-        (``sent``, ``delivered``, ``read``, ``failed``) or from any other
-        code path that calls doc.save().
+        (``sent``, ``delivered``, ``read``, ``played``, ``failed``) or from
+        any other code path that calls doc.save().
 
 Delivery state machine
 ----------------------
@@ -133,6 +133,7 @@ _NORMALIZE_MAP: dict[str, str] = {
     "sent": "sent",
     "delivered": "delivered",
     "read": "read",
+    "played": "read",    # Playing audio is a stronger read receipt
     "marked as read": "read",
 }
 
@@ -209,8 +210,10 @@ def _format_delivery_exception(exc: Exception, url: str | None) -> str:
 def _log_status_delivery_failure(log_name: str, error: str) -> None:
     """Write one actionable Error Log for terminal delivery failures."""
     frappe.log_error(
-        f"Status webhook delivery failed for log {log_name}: {error}",
-        f"WhatsApp Status Notifier failure for log {log_name}",
+        title=f"WhatsApp Status Notifier failure for log {log_name}",
+        message=(
+            f"Status webhook delivery failed for log {log_name}: {error}"
+        ),
     )
 
 
