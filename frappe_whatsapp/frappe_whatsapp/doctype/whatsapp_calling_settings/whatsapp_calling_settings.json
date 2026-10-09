@@ -16,7 +16,8 @@
   "routing_section",
   "agent_channel_template",
   "destination_context",
-  "destination_number_template"
+  "destination_number_template",
+  "identity_destination_extension"
  ],
  "fields": [
   {
@@ -97,13 +98,19 @@
    "fieldname": "destination_number_template",
    "fieldtype": "Data",
    "label": "Destination Number Template"
+  },
+  {
+   "description": "Fixed dialplan extension used for BSUID-only calls. Use 1-64 ASCII letters, digits, underscores, or hyphens. The recipient is passed through WHATSAPP_RECIPIENT_* AMI variables.",
+   "fieldname": "identity_destination_extension",
+   "fieldtype": "Data",
+   "label": "BSUID Destination Extension"
   }
  ],
  "grid_page_length": 50,
  "issingle": 1,
  "links": [],
- "modified": "2026-07-14 16:32:00.906934",
- "modified_by": "operez@zoni.edu",
+ "modified": "2026-10-03 10:31:33.481333",
+ "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Calling Settings",
  "owner": "Administrator",

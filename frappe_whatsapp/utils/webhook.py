@@ -3,6 +3,7 @@ import frappe
 import hashlib
 import hmac
 import json
+import re
 import requests
 from frappe.utils import cint
 from frappe.utils.password import get_decrypted_password as \
@@ -49,9 +50,10 @@ DEFAULT_MEDIA_EXTENSION_BY_TYPE = {
     "video": "mp4",
 }
 
-_UNSUPPORTED_INCOMING_MESSAGE_TYPES = frozenset({
-    "unsupported", "unknown", "system",
-})
+_UNSUPPORTED_INCOMING_MESSAGE_TYPES = frozenset({"unsupported", "unknown"})
+_BSUID_IN_TEXT = re.compile(
+    r"\b[A-Z]{2}\.(?:ENT\.)?[A-Za-z0-9]{1,128}\b"
+)
 
 
 def _normalize_unsupported_log_value(
@@ -455,7 +457,7 @@ def _verify_webhook_signature(raw_body: bytes, sig_header: str) -> bool:
 
 
 def process_webhook_payload(data: dict):
-    """Runs in background worker. Contains the old post() logic."""
+    """Process every entry/change in a Meta webhook payload."""
     # Defensive: data can be string sometimes
     if isinstance(data, str):
         try:
@@ -475,106 +477,145 @@ def process_webhook_payload(data: dict):
     else:
         entries = []
 
-    # Extract the first valid change together with its parent entry's WABA ID.
-    # Keeping them paired means the trust check and log message below both
-    # refer to the exact same entry — a trusted later entry cannot authorize
-    # an untrusted earlier one.
-    changes = None
-    entry_waba_id = ""
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        changes_list = entry.get("changes") or []
-        if isinstance(changes_list, list) and changes_list:
-            first_change = changes_list[0]
-        elif isinstance(changes_list, dict):
-            first_change = changes_list
-        else:
+        raw_changes = entry.get("changes") or []
+        changes = raw_changes if isinstance(raw_changes, list) else [raw_changes]
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            if change.get("field") in _TEMPLATE_WEBHOOK_FIELDS:
+                entry_waba_id = str(entry.get("id") or "")
+                if _is_trusted_waba_id(entry_waba_id):
+                    update_status(change)
+                else:
+                    frappe.log_error(
+                        f"Untrusted template webhook WABA ID: {entry_waba_id}",
+                        "WhatsApp untrusted template webhook",
+                    )
+                continue
+
+            value = change.get("value")
+            if not isinstance(value, dict):
+                continue
+            phone_id = (value.get("metadata") or {}).get("phone_number_id")
+            whatsapp_account = (
+                get_whatsapp_account(phone_id)
+                if phone_id
+                else get_whatsapp_account(account_type="incoming")
+            )
+            if not whatsapp_account:
+                frappe.log_error(
+                    f"No WhatsApp Account for phone_number_id {phone_id or '<missing>'}",
+                    "WhatsApp webhook account resolution failed",
+                )
+                continue
+
+            contacts = value.get("contacts") or []
+            contacts = contacts if isinstance(contacts, list) else []
+            messages = value.get("messages") or []
+            messages = messages if isinstance(messages, list) else []
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                contact = _match_webhook_contact(message, contacts)
+                _process_incoming_message(
+                    message=message,
+                    contact=contact,
+                    whatsapp_account=whatsapp_account,
+                )
+
+            if change.get("field") == "user_id_update":
+                _process_user_id_update(value, whatsapp_account)
+            if value.get("statuses") or not messages:
+                update_status(change, whatsapp_account=whatsapp_account)
+
+
+def _match_webhook_contact(
+    message: dict[str, Any], contacts: list[dict[str, Any]]
+) -> dict[str, Any]:
+    if len(contacts) == 1:
+        return contacts[0] if isinstance(contacts[0], dict) else {}
+    message_user_id = str(message.get("from_user_id") or "")
+    message_phone = str(message.get("from") or "")
+    for contact in contacts:
+        if not isinstance(contact, dict):
             continue
-        if isinstance(first_change, dict):
-            changes = first_change
-            entry_waba_id = str(entry.get("id") or "")
-            break
+        if message_user_id and str(contact.get("user_id") or "") == message_user_id:
+            return contact
+        if message_phone and str(contact.get("wa_id") or "") == message_phone:
+            return contact
+    return {}
 
-    # Template-related events (status, quality, category) do NOT carry a
-    # phone_number_id in their payload — Meta omits metadata entirely.
-    # Handle them here, before the account-resolution step, so they are
-    # never silently dropped by the whatsapp_account guard below.
-    #
-    # Security: validate the WABA ID of the *specific* entry being processed
-    # against configured local accounts.  See _is_trusted_waba_id() for
-    # details and the preferred upgrade path (X-Hub-Signature-256).
-    if changes and changes.get("field") in _TEMPLATE_WEBHOOK_FIELDS:
-        if _is_trusted_waba_id(entry_waba_id):
-            update_status(changes)
-        else:
-            frappe.log_error(
-                (
-                    f"Template webhook event ignored: entry WABA ID "
-                    f"'{entry_waba_id}' does not match any configured "
-                    "WhatsApp Account (business_id). Possible spoofed request."
-                ),
-                "WhatsApp untrusted template webhook",
-            )
-        return
 
-    messages = []
-    phone_id = None
+def _process_user_id_update(value: dict[str, Any], whatsapp_account: Any) -> None:
+    from frappe_whatsapp.utils.identity import apply_user_id_update, profile_identity
+    from frappe_whatsapp.utils.routing import forward_identity_update_to_app_async
 
-    try:
-        messages = entries[0]["changes"][0]["value"].get("messages", []) or []
-        phone_id = (
-            entries[0]["changes"][0]
-            .get("value", {})
-            .get("metadata", {})
-            .get("phone_number_id")
+    raw_updates = value.get("user_id_update") or value.get("user_id_updates") or value
+    updates = raw_updates if isinstance(raw_updates, list) else [raw_updates]
+    contacts = value.get("contacts") or []
+    contact = contacts[0] if isinstance(contacts, list) and len(contacts) == 1 else {}
+    contact = contact if isinstance(contact, dict) else {}
+    contact_profile = contact.get("profile")
+    contact_profile = contact_profile if isinstance(contact_profile, dict) else {}
+    for update in updates:
+        if not isinstance(update, dict):
+            continue
+        user_id_change = update.get("user_id")
+        parent_user_id_change = update.get("parent_user_id")
+        normalized_update = dict(update)
+        if isinstance(user_id_change, dict):
+            normalized_update.update({
+                "previous_user_id": user_id_change.get("previous"),
+                "current_user_id": user_id_change.get("current"),
+            })
+        if isinstance(parent_user_id_change, dict):
+            normalized_update.update({
+                "previous_parent_user_id": parent_user_id_change.get("previous"),
+                "current_parent_user_id": parent_user_id_change.get("current"),
+            })
+        normalized_update["wa_id"] = (
+            normalized_update.get("wa_id") or contact.get("wa_id")
         )
-    except Exception:
-        messages = []
-
-    sender_profile_name = next(
-        (
-            contact.get("profile", {}).get("name")
-            for entry in entries
-            for change in (entry.get("changes") or [])
-            for contact in (change.get("value", {}).get("contacts") or [])
-        ),
-        None,
-    )
-
-    if phone_id:
-        whatsapp_account = get_whatsapp_account(phone_id)
-        if not whatsapp_account:
-            frappe.log_error(
-                title="WhatsApp webhook unknown phone number ID",
-                message=(
-                    "WhatsApp webhook ignored: phone_number_id "
-                    f"'{phone_id}' does not match any configured "
-                    "WhatsApp Account. Add an active WhatsApp Account for "
-                    "this phone ID before processing inbound messages."
-                ),
-            )
-            return
-    else:
-        whatsapp_account = get_whatsapp_account(account_type="incoming")
-
-    if not whatsapp_account:
-        return
-
-    from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import WhatsAppAccount  # noqa
-    whatsapp_account = cast(WhatsAppAccount, whatsapp_account)
-
-    if messages:
-        for message in messages:
-            _process_incoming_message(
-                message=message,
-                whatsapp_account=whatsapp_account,
-                sender_profile_name=sender_profile_name
-            )
-    else:
-        # Message delivery status updates (field == "messages")
-        if changes:
-            update_status(changes)
+        normalized_update["username"] = (
+            normalized_update.get("username")
+            or contact.get("username")
+            or contact_profile.get("username")
+        )
+        if not any(normalized_update.get(key) for key in (
+            "user_id",
+            "current_user_id",
+            "previous_user_id",
+            "parent_user_id",
+            "current_parent_user_id",
+            "previous_parent_user_id",
+        )):
+            continue
+        profile = apply_user_id_update(
+            whatsapp_account=str(whatsapp_account.name), update=normalized_update
+        )
+        forward_identity_update_to_app_async(
+            whatsapp_account=str(whatsapp_account.name),
+            profile_name=str(profile.name),
+            previous_user_id=(
+                str(normalized_update.get("previous_user_id") or "") or None
+            ),
+            previous_parent_user_id=(
+                str(
+                    normalized_update.get("previous_parent_user_id") or ""
+                ) or None
+            ),
+            identity=profile_identity(profile),
+            source_event_id=(
+                str(
+                    normalized_update.get("_source_event_id")
+                    or normalized_update.get("timestamp")
+                    or ""
+                ) or None
+            ),
+        )
 
 
 def _enqueue_language_detection(
@@ -600,19 +641,15 @@ def _enqueue_language_detection(
 
 
 def _process_incoming_message(
-        *, message: dict, whatsapp_account, sender_profile_name: str | None):
-
-    contact_number = message.get("from")
-    if not contact_number:
-        return
-
-    if is_contact_blocked(
-            whatsapp_account=str(whatsapp_account.name),
-            contact_number=contact_number):
-        return
+        *, message: dict, whatsapp_account, contact: dict | None = None,
+        sender_profile_name: str | None = None):
+    from frappe_whatsapp.utils.identity import (
+        identity_from_webhook,
+        profile_identity,
+        resolve_identity,
+    )
 
     message_type = message.get("type")
-    referral_fields = normalize_referral(message.get("referral"))
     if (
         isinstance(message_type, str)
         and message_type in _UNSUPPORTED_INCOMING_MESSAGE_TYPES
@@ -622,10 +659,68 @@ def _process_incoming_message(
             whatsapp_account=whatsapp_account,
         )
         return
+    if message_type == "system":
+        system = message.get("system") or {}
+        if str(system.get("type") or "") == "user_changed_user_id":
+            previous_user_id = message.get("from_user_id")
+            if not previous_user_id:
+                current_user_id = str(system.get("user_id") or "")
+                previous_user_id = next((
+                    candidate
+                    for candidate in _BSUID_IN_TEXT.findall(
+                        str(system.get("body") or "")
+                    )
+                    if ".ENT." not in candidate
+                    and candidate != current_user_id
+                ), None)
+            _process_user_id_update(
+                {
+                    **system,
+                    "previous_wa_id": message.get("from"),
+                    "previous_user_id": previous_user_id,
+                    "previous_parent_user_id": message.get(
+                        "from_parent_user_id"
+                    ),
+                    "_source_event_id": message.get("id"),
+                },
+                whatsapp_account,
+            )
+        else:
+            _log_unsupported_incoming_message(
+                message=message,
+                whatsapp_account=whatsapp_account,
+            )
+        return
+
+    msg_id = message.get("id")
+    if msg_id and frappe.db.exists("WhatsApp Message", {"message_id": msg_id}):
+        return
+
+    if contact is None and sender_profile_name:
+        contact = {"profile": {"name": sender_profile_name}}
+    identity = identity_from_webhook(message, contact)
+    profile = resolve_identity(
+        whatsapp_account=str(whatsapp_account.name), identity=identity
+    )
+    normalized_identity = profile_identity(profile)
+    contact_number = normalized_identity.get("phone")
+    sender_profile_name = sender_profile_name or (
+        identity.get("profile_name") or identity.get("username") or None
+    )
+
+    if is_contact_blocked(
+            whatsapp_account=str(whatsapp_account.name),
+            contact_number=contact_number,
+            contact_profile=str(profile.name),
+            user_id=normalized_identity.get("user_id")):
+        return
+
+    referral_fields = normalize_referral(message.get("referral"))
 
     routed_app = resolve_incoming_routed_app(
         whatsapp_account=str(whatsapp_account.name),
-        contact_number=contact_number
+        contact_number=str(contact_number or ""),
+        contact_profile=str(profile.name),
     )
 
     context = message.get("context")
@@ -643,9 +738,13 @@ def _process_incoming_message(
     reply_to_message_id = str(context_id) if is_reply else None
 
     # ✅ Idempotency guard: don't insert duplicates
-    msg_id = message.get("id")
-    if msg_id and frappe.db.exists("WhatsApp Message", {"message_id": msg_id}):
-        return
+    identity_fields = {
+        "from": contact_number,
+        "contact_profile": profile.name,
+        "from_user_id": normalized_identity.get("user_id"),
+        "from_parent_user_id": normalized_identity.get("parent_user_id"),
+        "username": normalized_identity.get("username"),
+    }
 
     if message_type == "text":
         body_text = (message.get("text") or {}).get("body", "")
@@ -653,7 +752,7 @@ def _process_incoming_message(
         doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Incoming",
-            "from": message.get("from"),
+            **identity_fields,
             "message": body_text,
             "message_id": msg_id,
             "reply_to_message_id": reply_to_message_id,
@@ -668,13 +767,15 @@ def _process_incoming_message(
         # Check for opt-out / opt-in keywords
         _handle_consent_keywords(
             body_text=body_text,
-            contact_number=contact_number,
+            contact_number=str(contact_number or ""),
+            contact_profile=str(profile.name),
             whatsapp_account_name=str(whatsapp_account.name),
             message_doc_name=str(doc.name),
             profile_name=sender_profile_name,
         )
 
-        _enqueue_language_detection(
+        if contact_number:
+            _enqueue_language_detection(
             contact_number=contact_number,
             whatsapp_account=str(whatsapp_account.name),
             text=body_text,
@@ -691,7 +792,8 @@ def _process_incoming_message(
             sender_profile_name=sender_profile_name,
             routed_app=routed_app,
             reply_to_message_id=reply_to_message_id,
-            is_reply=is_reply
+            is_reply=is_reply,
+            identity_fields=identity_fields,
         )
 
     elif message_type in ["image", "audio", "video", "document", "sticker"]:
@@ -701,7 +803,7 @@ def _process_incoming_message(
         msg_doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Incoming",
-            "from": message.get("from"),
+            **identity_fields,
             "message_id": msg_id,
             "reply_to_message_id": reply_to_message_id,
             "is_reply": is_reply,
@@ -726,13 +828,14 @@ def _process_incoming_message(
         # Check for opt-out / opt-in keywords in caption (if any)
         _handle_consent_keywords(
             body_text=caption_text or "",
-            contact_number=contact_number,
+            contact_number=str(contact_number or ""),
+            contact_profile=str(profile.name),
             whatsapp_account_name=str(whatsapp_account.name),
             message_doc_name=str(msg_doc.name),
             profile_name=sender_profile_name,
         )
 
-        if caption_text:
+        if caption_text and contact_number:
             _enqueue_language_detection(
                 contact_number=contact_number,
                 whatsapp_account=str(whatsapp_account.name),
@@ -754,21 +857,42 @@ def _process_incoming_message(
             )
 
     elif message_type == "contacts":
-        body_text = _format_shared_contacts(message.get("contacts"))
+        shared_contacts = message.get("contacts") or []
+        shared_contacts = (
+            shared_contacts if isinstance(shared_contacts, list) else []
+        )
+        origins = [
+            str(item.get("origin"))
+            for item in shared_contacts
+            if isinstance(item, dict) and item.get("origin")
+        ]
+        contact_origin = str(message.get("origin") or "") or (
+            origins[0] if origins else None
+        )
+        body_text = _format_shared_contacts(shared_contacts)
         doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Incoming",
-            "from": message.get("from"),
+            **identity_fields,
             "message_id": msg_id,
             "reply_to_message_id": reply_to_message_id,
             "is_reply": is_reply,
             "message": body_text,
             "content_type": "contact",
+            "contact_payload": {"contacts": shared_contacts},
+            "contact_origin": contact_origin,
             "profile_name": sender_profile_name,
             "whatsapp_account": whatsapp_account.name,
             "routed_app": routed_app,
             **referral_fields,
         }).insert(ignore_permissions=True)
+
+        if contact_origin == "contact_request":
+            _link_requested_contact_phone(
+                message=message,
+                identity=identity,
+                whatsapp_account=str(whatsapp_account.name),
+            )
 
         # Contact-card data is not sender-authored conversational text. Do not
         # use it for consent keyword matching or profile language detection.
@@ -785,7 +909,7 @@ def _process_incoming_message(
         doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Incoming",
-            "from": message.get("from"),
+            **identity_fields,
             "message_id": msg_id,
             "reply_to_message_id": reply_to_message_id,
             "is_reply": is_reply,
@@ -801,13 +925,14 @@ def _process_incoming_message(
         # body
         _handle_consent_keywords(
             body_text=body_text or "",
-            contact_number=contact_number,
+            contact_number=str(contact_number or ""),
+            contact_profile=str(profile.name),
             whatsapp_account_name=str(whatsapp_account.name),
             message_doc_name=str(doc.name),
             profile_name=sender_profile_name,
         )
 
-        if body_text:
+        if body_text and contact_number:
             _enqueue_language_detection(
                 contact_number=contact_number,
                 whatsapp_account=str(whatsapp_account.name),
@@ -822,7 +947,8 @@ def _process_incoming_message(
 def _handle_consent_keywords(
         *, body_text: str, contact_number: str,
         whatsapp_account_name: str, message_doc_name: str,
-        profile_name: str | None) -> None:
+        profile_name: str | None,
+        contact_profile: str | None = None) -> None:
     """Detect opt-out or opt-in keywords and update profile consent.
 
     Text that matches neither an opt-out nor an opt-in keyword is silently
@@ -844,11 +970,13 @@ def _handle_consent_keywords(
             message_doc_name=message_doc_name,
             keyword_match=keyword_match,
             profile_name=profile_name,
+            contact_profile=contact_profile,
         )
-        send_opt_out_confirmation(
-            contact_number=contact_number,
-            whatsapp_account_name=whatsapp_account_name,
-        )
+        if contact_number:
+            send_opt_out_confirmation(
+                contact_number=contact_number,
+                whatsapp_account_name=whatsapp_account_name,
+            )
         return
 
     # Check opt-in
@@ -858,16 +986,45 @@ def _handle_consent_keywords(
             whatsapp_account=whatsapp_account_name,
             message_doc_name=message_doc_name,
             profile_name=profile_name,
+            contact_profile=contact_profile,
         )
-        send_opt_in_confirmation(
-            contact_number=contact_number,
-            whatsapp_account_name=whatsapp_account_name,
-        )
+        if contact_number:
+            send_opt_in_confirmation(
+                contact_number=contact_number,
+                whatsapp_account_name=whatsapp_account_name,
+            )
+
+
+def _link_requested_contact_phone(
+    *, message: dict[str, Any], identity: dict[str, Any], whatsapp_account: str
+) -> None:
+    """Link a phone voluntarily returned by REQUEST_CONTACT_INFO."""
+    shared_contacts = message.get("contacts") or []
+    if not isinstance(shared_contacts, list):
+        return
+    phones: list[str] = []
+    for shared_contact in shared_contacts:
+        if not isinstance(shared_contact, dict):
+            continue
+        for phone in shared_contact.get("phones") or []:
+            if isinstance(phone, dict):
+                value = phone.get("phone") or phone.get("wa_id")
+                if value:
+                    phones.append(str(value))
+    if not phones:
+        return
+    from frappe_whatsapp.utils.identity import resolve_identity
+
+    resolve_identity(
+        whatsapp_account=whatsapp_account,
+        identity={**identity, "phone": phones[0]},
+        explicit_link=True,
+    )
 
 
 def _handle_interactive(
         *, message, whatsapp_account, sender_profile_name,
-        routed_app, reply_to_message_id, is_reply):
+        routed_app, reply_to_message_id, is_reply, identity_fields):
     interactive = message.get("interactive") or {}
     interactive_type = interactive.get("type")
     referral_fields = normalize_referral(message.get("referral"))
@@ -883,7 +1040,7 @@ def _handle_interactive(
         doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Incoming",
-            "from": message.get("from"),
+            **identity_fields,
             "message": summary_message,
             "message_id": message.get("id"),
             "reply_to_message_id": reply_to_message_id,
@@ -898,6 +1055,8 @@ def _handle_interactive(
         from frappe_whatsapp.utils.calling import handle_call_permission_reply
         handle_call_permission_reply(
             contact_number=str(message.get("from") or ""),
+            recipient=str(identity_fields.get("from_user_id") or "") or None,
+            contact_profile=str(identity_fields.get("contact_profile") or "") or None,
             whatsapp_account_name=str(whatsapp_account.name),
             response=response,
             is_permanent=cint(permission_reply.get("is_permanent") or 0) == 1,
@@ -918,7 +1077,7 @@ def _handle_interactive(
         doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Incoming",
-            "from": message.get("from"),
+            **identity_fields,
             "message": payload.get("id"),
             "message_id": message.get("id"),
             "reply_to_message_id": reply_to_message_id,
@@ -933,7 +1092,10 @@ def _handle_interactive(
         # Check for opt-out / opt-in keywords based on reply text/id
         _handle_consent_keywords(
             body_text=payload_text,
-            contact_number=message.get("from"),
+            contact_number=str(identity_fields.get("from") or ""),
+            contact_profile=str(
+                identity_fields.get("contact_profile") or ""
+            ) or None,
             whatsapp_account_name=str(whatsapp_account.name),
             message_doc_name=str(doc.name),
             profile_name=sender_profile_name,
@@ -941,9 +1103,9 @@ def _handle_interactive(
 
         # Detect language from the human-readable title only (not payload id)
         button_title = str(payload.get("title") or "")
-        if button_title:
+        if button_title and identity_fields.get("from"):
             _enqueue_language_detection(
-                contact_number=str(message.get("from") or ""),
+                contact_number=str(identity_fields.get("from") or ""),
                 whatsapp_account=str(whatsapp_account.name),
                 text=button_title,
                 message_doc_name=str(doc.name),
@@ -969,7 +1131,7 @@ def _handle_interactive(
         doc = frappe.get_doc({
             "doctype": "WhatsApp Message",
             "type": "Incoming",
-            "from": message.get("from"),
+            **identity_fields,
             "message": summary_message,
             "message_id": message.get("id"),
             "reply_to_message_id": reply_to_message_id,
@@ -1067,7 +1229,7 @@ def _enqueue_template_sync() -> None:
     )
 
 
-def update_status(data):
+def update_status(data, whatsapp_account=None):
     """Update status hook."""
     value = data.get("value")
     if not isinstance(value, dict):
@@ -1079,7 +1241,7 @@ def update_status(data):
         update_template_status(value)
 
     elif field == "messages":
-        update_message_status(value)
+        update_message_status(value, whatsapp_account=whatsapp_account)
 
     if field in _TEMPLATE_WEBHOOK_FIELDS:
         _enqueue_template_sync()
@@ -1146,13 +1308,17 @@ def _extract_status_error_fields(
     return error_fields
 
 
-def update_message_status(data):
+def update_message_status(data, whatsapp_account=None):
     """Update message status."""
     statuses = data.get("statuses")
     if not statuses or not isinstance(statuses, list):
         return
 
     from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_message.whatsapp_message import WhatsAppMessage  # noqa
+    from frappe_whatsapp.utils.identity import profile_identity, resolve_identity
+
+    contacts = data.get("contacts") or []
+    contacts = contacts if isinstance(contacts, list) else []
 
     for status_payload in statuses:
         if not isinstance(status_payload, dict):
@@ -1172,6 +1338,73 @@ def update_message_status(data):
         doc = cast(
             WhatsAppMessage,
             frappe.get_doc("WhatsApp Message", str(name)))
+        account_name = str(
+            getattr(whatsapp_account, "name", None)
+            or doc.whatsapp_account
+            or ""
+        )
+        status_contact = {}
+        for candidate in contacts:
+            if not isinstance(candidate, dict):
+                continue
+            if (
+                status_payload.get("recipient_user_id")
+                and candidate.get("user_id")
+                == status_payload.get("recipient_user_id")
+            ) or (
+                status_payload.get("recipient_id")
+                and candidate.get("wa_id")
+                == status_payload.get("recipient_id")
+            ):
+                status_contact = candidate
+                break
+        if not status_contact and len(contacts) == 1:
+            status_contact = contacts[0]
+        status_contact = status_contact if isinstance(status_contact, dict) else {}
+        status_profile = status_contact.get("profile")
+        status_profile = status_profile if isinstance(status_profile, dict) else {}
+        raw_phone = status_contact.get("wa_id") or status_payload.get("recipient_id")
+        raw_user_id = (
+            status_payload.get("recipient_user_id")
+            or status_contact.get("user_id")
+        )
+        identity = {
+            "phone": raw_phone if str(raw_phone or "").isdigit() else None,
+            "user_id": raw_user_id,
+            "parent_user_id": (
+                status_payload.get("recipient_parent_user_id")
+                or status_contact.get("parent_user_id")
+            ),
+            "username": (
+                status_contact.get("username")
+                or status_profile.get("username")
+            ),
+            "profile_name": status_profile.get("name"),
+        }
+        if account_name and any(
+            identity.get(key)
+            for key in ("phone", "user_id", "parent_user_id")
+        ):
+            profile = resolve_identity(
+                whatsapp_account=account_name,
+                identity=identity,
+                explicit_link=True,
+            )
+            resolved = profile_identity(profile)
+            doc.contact_profile = profile.name
+            doc.recipient_user_id = raw_user_id or resolved.get("user_id")
+            doc.recipient_parent_user_id = (
+                identity.get("parent_user_id")
+                or resolved.get("parent_user_id")
+            )
+            if not doc.to and resolved.get("phone"):
+                doc.to = resolved["phone"]
+        if doc.meta.has_field("status_recipient_phone"):
+            doc.status_recipient_phone = (
+                str(raw_phone) if str(raw_phone or "").isdigit() else None
+            )
+        if doc.meta.has_field("status_contacts"):
+            doc.status_contacts = json.dumps({"contacts": contacts})
         doc.status = status
         if conversation:
             doc.conversation_id = conversation

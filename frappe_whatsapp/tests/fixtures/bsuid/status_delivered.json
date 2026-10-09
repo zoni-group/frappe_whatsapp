@@ -1,0 +1,23 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [{
+    "id": "WABA_TEST",
+    "changes": [{
+      "field": "messages",
+      "value": {
+        "metadata": {"phone_number_id": "PHONE_ID_TEST"},
+        "contacts": [{
+          "profile": {"name": "Pablo M.", "username": "pablomorales"},
+          "user_id": "US.13491208655302741918",
+          "parent_user_id": "US.ENT.11815799212886844830"
+        }],
+        "statuses": [{
+          "id": "wamid.fixture.outbound",
+          "status": "delivered",
+          "recipient_user_id": "US.13491208655302741918",
+          "recipient_parent_user_id": "US.ENT.11815799212886844830"
+        }]
+      }
+    }]
+  }]
+}

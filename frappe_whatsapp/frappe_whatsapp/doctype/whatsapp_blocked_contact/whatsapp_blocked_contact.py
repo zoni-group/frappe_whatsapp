@@ -15,7 +15,8 @@ class WhatsAppBlockedContact(Document):
         from frappe.types import DF
 
         blocked_at: DF.Datetime | None
-        contact_number: DF.Data
+        contact_number: DF.Data | None
+        contact_profile: DF.Link | None
         is_blocked: DF.Check
         last_error: DF.SmallText | None
         last_error_payload: DF.JSON | None
@@ -27,6 +28,7 @@ class WhatsAppBlockedContact(Document):
         source_app: DF.Link | None
         source_message: DF.Link | None
         unblocked_at: DF.Datetime | None
+        user_id: DF.Data | None
         whatsapp_account: DF.Link
     # end: auto-generated types
 

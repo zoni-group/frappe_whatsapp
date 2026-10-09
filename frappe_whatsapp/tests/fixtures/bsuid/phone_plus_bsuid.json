@@ -1,0 +1,24 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [{
+    "id": "WABA_TEST",
+    "changes": [{
+      "field": "messages",
+      "value": {
+        "metadata": {"phone_number_id": "PHONE_ID_TEST"},
+        "contacts": [{
+          "profile": {"name": "Pablo M."},
+          "wa_id": "16505551234",
+          "user_id": "US.13491208655302741918"
+        }],
+        "messages": [{
+          "from": "16505551234",
+          "from_user_id": "US.13491208655302741918",
+          "id": "wamid.fixture.phone-bsuid",
+          "type": "text",
+          "text": {"body": "Phone plus BSUID"}
+        }]
+      }
+    }]
+  }]
+}

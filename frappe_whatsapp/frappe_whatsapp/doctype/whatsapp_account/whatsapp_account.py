@@ -33,6 +33,7 @@ class WhatsAppAccount(Document):
         app_id: DF.Data | None
         app_secret: DF.Password | None
         business_id: DF.Data | None
+        business_portfolio_id: DF.Data | None
         enable_campaign_tracking: DF.Check
         is_default_incoming: DF.Check
         is_default_outgoing: DF.Check

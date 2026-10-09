@@ -1,0 +1,25 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [{
+    "id": "WABA_TEST",
+    "changes": [{
+      "field": "user_id_update",
+      "value": {
+        "metadata": {"phone_number_id": "PHONE_ID_TEST"},
+        "contacts": [{"wa_id": "16505551234"}],
+        "user_id_update": [{
+          "wa_id": "16505551234",
+          "user_id": {
+            "previous": "US.1033196179544075",
+            "current": "US.2033196179544075"
+          },
+          "parent_user_id": {
+            "previous": "US.ENT.1033196179544075",
+            "current": "US.ENT.2033196179544075"
+          },
+          "timestamp": "1780315200"
+        }]
+      }
+    }]
+  }]
+}

@@ -19,12 +19,13 @@ class WhatsAppConsentLog(Document):
 		ip_address: DF.Data | None
 		name: DF.Int | None
 		new_status: DF.Check
-		phone_number: DF.Data
+		phone_number: DF.Data | None
 		previous_status: DF.Check
 		profile: DF.Link
 		source: DF.Literal["Manual", "Webhook", "API", "Bulk Import", "System"]
 		source_message: DF.Link | None
 		timestamp: DF.Datetime | None
 		user: DF.Link | None
+		whatsapp_account: DF.Link | None
 	# end: auto-generated types
 	pass

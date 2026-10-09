@@ -27,6 +27,7 @@ from frappe_whatsapp.utils.calling import (
     request_call_permission,
     start_outbound_call,
     validate_call_permission_language_code,
+    validate_identity_destination_extension,
 )
 
 if TYPE_CHECKING:
@@ -119,7 +120,8 @@ class TestWhatsAppCallingAMI(FrappeTestCase):
         )
 
         payload = _build_originate_payload(
-            cast(Any, settings), cast(Any, call_doc), "action-1")
+            cast(Any, settings), cast(Any, call_doc), "action-1"
+        )
 
         self.assertEqual(payload["Action"], "Originate")
         self.assertEqual(payload["ActionID"], "action-1")
@@ -128,6 +130,97 @@ class TestWhatsAppCallingAMI(FrappeTestCase):
         self.assertEqual(payload["Exten"], "WA15551234567")
         self.assertEqual(payload["Timeout"], "45000")
         self.assertEqual(payload["Variable"], "WHATSAPP_CALL_ID=CALL-1")
+
+    def _bsuid_settings(self) -> Any:
+        return frappe._dict(
+            {
+                "agent_channel_template": "Local/{extension}@from-internal",
+                "destination_number_template": "829944{number}",
+                "destination_context": "from-internal",
+                "identity_destination_extension": "whatsapp-bsuid",
+                "originate_timeout": 45,
+            }
+        )
+
+    def test_build_originate_payload_for_regular_bsuid(self):
+        call_doc = SimpleNamespace(
+            name="CALL-REGULAR",
+            phone_number="",
+            recipient="US.AbCd1234",
+            agent_extension="847",
+        )
+
+        payload = _build_originate_payload(
+            self._bsuid_settings(), cast(Any, call_doc), "action-regular"
+        )
+
+        self.assertEqual(payload["Context"], "from-internal")
+        self.assertEqual(payload["Exten"], "whatsapp-bsuid")
+        self.assertEqual(
+            payload["Variable"],
+            "WHATSAPP_CALL_ID=CALL-REGULAR,"
+            "WHATSAPP_RECIPIENT_KIND=user_id,"
+            "WHATSAPP_RECIPIENT_B64=VVMuQWJDZDEyMzQ",
+        )
+
+    def test_build_originate_payload_for_parent_bsuid(self):
+        call_doc = SimpleNamespace(
+            name="CALL-PARENT",
+            phone_number="",
+            recipient="US.ENT.AbCd1234",
+            agent_extension="847",
+        )
+
+        payload = _build_originate_payload(
+            self._bsuid_settings(), cast(Any, call_doc), "action-parent"
+        )
+
+        self.assertEqual(payload["Exten"], "whatsapp-bsuid")
+        self.assertEqual(
+            payload["Variable"],
+            "WHATSAPP_CALL_ID=CALL-PARENT,"
+            "WHATSAPP_RECIPIENT_KIND=parent_user_id,"
+            "WHATSAPP_RECIPIENT_B64=VVMuRU5ULkFiQ2QxMjM0",
+        )
+
+    def test_build_originate_payload_prefers_phone(self):
+        call_doc = SimpleNamespace(
+            name="CALL-PHONE",
+            phone_number="+12015550123",
+            recipient="US.AbCd1234",
+            agent_extension="847",
+        )
+
+        payload = _build_originate_payload(
+            self._bsuid_settings(), cast(Any, call_doc), "action-phone"
+        )
+
+        self.assertEqual(payload["Exten"], "82994412015550123")
+        self.assertEqual(payload["Variable"], "WHATSAPP_CALL_ID=CALL-PHONE")
+
+    def test_identity_destination_extension_rejects_unsafe_values(self):
+        for extension in (
+            " whatsapp-bsuid",
+            "whatsapp-bsuid ",
+            "whatsapp/bsuid",
+            "whatsapp,bsuid",
+            "whatsapp\r\nAction: Logoff",
+            "a" * 65,
+        ):
+            with self.subTest(extension=extension):
+                with self.assertRaises(frappe.ValidationError):
+                    validate_identity_destination_extension(
+                        extension,
+                        required=True,
+                    )
+
+        self.assertEqual(
+            validate_identity_destination_extension(
+                "whatsapp-bsuid",
+                required=True,
+            ),
+            "whatsapp-bsuid",
+        )
 
     def _ami_settings(self) -> Any:
         settings = SimpleNamespace(

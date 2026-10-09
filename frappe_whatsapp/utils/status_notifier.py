@@ -68,6 +68,7 @@ To add per-app HMAC-SHA256 request signing in the future:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
@@ -343,8 +344,15 @@ def _build_payload(
 ) -> dict:
     """Build the stable webhook payload delivered to the client app."""
     current_status: str | None = getattr(doc, "status", None)
+    status_contacts = getattr(doc, "status_contacts", None) or {}
+    if isinstance(status_contacts, str):
+        try:
+            status_contacts = json.loads(status_contacts)
+        except (TypeError, ValueError):
+            status_contacts = {}
 
     payload: dict[str, Any] = {
+        "schema_version": 2,
         "event": "whatsapp.message_status",
         "event_id": event_id,
         "occurred_at": str(now_datetime()),
@@ -356,6 +364,15 @@ def _build_payload(
                 doc, "external_reference", None) or "",
             "source_app": getattr(doc, "source_app", None) or "",
             "to": getattr(doc, "to", None) or "",
+            "recipient": getattr(doc, "recipient", None) or "",
+            "recipient_user_id": getattr(doc, "recipient_user_id", None) or "",
+            "recipient_parent_user_id": getattr(
+                doc, "recipient_parent_user_id", None) or "",
+            "status_recipient_phone": getattr(
+                doc, "status_recipient_phone", None) or "",
+            "status_contacts": status_contacts,
+            "contact_profile": getattr(doc, "contact_profile", None) or "",
+            "identity": _status_identity(doc),
             "whatsapp_account": getattr(doc, "whatsapp_account", None) or "",
             "previous_status": previous_status or "",
             "current_status": current_status or "",
@@ -385,6 +402,36 @@ def _build_payload(
         payload["error"] = error_block
 
     return payload
+
+
+def _status_identity(doc: Any) -> dict[str, Any]:
+    profile_name = getattr(doc, "contact_profile", None)
+    if profile_name and frappe.db.exists("WhatsApp Profiles", profile_name):
+        from frappe_whatsapp.utils.identity import profile_identity
+
+        return profile_identity(
+            frappe.get_doc("WhatsApp Profiles", profile_name)
+        )
+    recipient = str(getattr(doc, "recipient", None) or "")
+    phone = str(getattr(doc, "to", None) or "") or None
+    user_id = (
+        str(getattr(doc, "recipient_user_id", None) or "")
+        or (recipient if recipient and ".ENT." not in recipient else "")
+        or None
+    )
+    parent_user_id = (
+        str(getattr(doc, "recipient_parent_user_id", None) or "")
+        or (recipient if ".ENT." in recipient else "")
+        or None
+    )
+    return {
+        "profile_id": profile_name,
+        "phone": phone,
+        "user_id": user_id,
+        "parent_user_id": parent_user_id,
+        "username": None,
+        "preferred_recipient": phone or user_id or parent_user_id,
+    }
 
 
 # ── Outbox management ──────────────────────────────────────────────────────
@@ -484,6 +531,62 @@ def maybe_enqueue_status_notification(
     )
 
 
+def queue_status_notification(
+    doc: Any,
+    previous_status: str | None,
+) -> None:
+    """Write new status events to the shared version-2 client outbox.
+
+    ``maybe_enqueue_status_notification`` remains available to drain and
+    inspect legacy status-log records created before the BSUID rollout, but
+    all document hooks use this unified outbox path.
+    """
+    if getattr(doc, "type", None) != "Outgoing":
+        return
+    source_app = getattr(doc, "source_app", None)
+    if not source_app:
+        return
+    try:
+        app_doc = cast(
+            "WhatsAppClientApp",
+            frappe.get_doc("WhatsApp Client App", source_app),
+        )
+    except frappe.DoesNotExistError:
+        return
+    if not app_doc.enabled or not (
+        app_doc.status_webhook_url or app_doc.inbound_webhook_url
+    ):
+        return
+
+    event_id = _build_event_id(
+        doc.name,
+        getattr(doc, "status", None),
+        error_code=getattr(doc, "status_error_code", None),
+        error_title=getattr(doc, "status_error_title", None),
+        error_message=getattr(doc, "status_error_message", None),
+        error_details=getattr(doc, "status_error_details", None),
+        error_href=getattr(doc, "status_error_href", None),
+    )
+    full_payload = _build_payload(
+        doc, previous_status, app_doc, event_id
+    )
+    event_payload = {"message": full_payload["message"]}
+    if "error" in full_payload:
+        event_payload["error"] = full_payload["error"]
+
+    from frappe_whatsapp.utils.client_delivery import queue_client_event
+
+    queue_client_event(
+        client_app=str(source_app),
+        whatsapp_account=str(
+            getattr(doc, "whatsapp_account", None) or ""
+        ),
+        event_type="whatsapp.message_status",
+        event_id=event_id,
+        payload=event_payload,
+    )
+
+
 def deliver_status_notification(log_name: str) -> None:
     """Deliver the webhook POST for a status log entry.
 
@@ -559,14 +662,36 @@ def deliver_status_notification(log_name: str) -> None:
     webhook_url = str(app_doc.status_webhook_url or "")
 
     try:
+        body = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+        timestamp = str(int(now_datetime().timestamp()))
+        headers = {
+            "Content-Type": "application/json",
+            "X-WhatsApp-App-ID": getattr(app_doc, "app_id", None) or "",
+            "X-WhatsApp-Event-ID": log.event_id or "",
+            # Retain the legacy name during the additive v2 rollout.
+            "X-Event-ID": log.event_id or "",
+            "X-WhatsApp-Timestamp": timestamp,
+        }
+        secret = app_doc.get_password(
+            "webhook_secret", raise_exception=False
+        )
+        if secret:
+            signature = hmac.new(
+                str(secret).encode("utf-8"),
+                timestamp.encode("ascii") + b"." + body,
+                hashlib.sha256,
+            ).hexdigest()
+            headers["X-WhatsApp-Signature"] = f"sha256={signature}"
+        elif app_doc.get("require_webhook_signature"):
+            raise frappe.ValidationError(
+                "WhatsApp Client App requires a webhook secret."
+            )
         resp = requests.post(
             webhook_url,
-            json=payload,
-            headers={
-                "Content-Type": "application/json",
-                "X-WhatsApp-App-ID": getattr(app_doc, "app_id", None) or "",
-                "X-Event-ID": log.event_id or "",
-            },
+            data=body,
+            headers=headers,
             timeout=_STATUS_WEBHOOK_TIMEOUT_SECONDS,
         )
 
@@ -771,7 +896,7 @@ def on_whatsapp_message_after_insert(
         return
     if not getattr(doc, "status", None):
         return
-    maybe_enqueue_status_notification(doc, previous_status=None)
+    queue_status_notification(doc, previous_status=None)
 
 
 def on_whatsapp_message_on_update(
@@ -795,4 +920,4 @@ def on_whatsapp_message_on_update(
     if not changed:
         return
 
-    maybe_enqueue_status_notification(doc, previous_status=previous_status)
+    queue_status_notification(doc, previous_status=previous_status)

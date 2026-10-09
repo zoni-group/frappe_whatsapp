@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import mimetypes
 from posixpath import basename
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -10,7 +11,6 @@ import frappe
 from frappe.core.doctype.document_share_key.document_share_key import (
     is_expired,
 )
-from frappe.integrations.utils import make_post_request
 from frappe.utils import get_url, now_datetime
 from frappe_whatsapp.utils import format_number
 from frappe_whatsapp.utils.campaign_attribution import (
@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
 
 ROUTE_DOCTYPE = "WhatsApp Conversation Route"
-FORWARDED_INCOMING_CACHE_PREFIX = "frappe_whatsapp:incoming_forwarded:"
 PRIVATE_FILE_PREFIX = "/private/files/"
 
 
@@ -44,19 +43,19 @@ def _get_route_doc_name(*, whatsapp_account: str, contact_number: str) -> str:
 def _upsert_conversation_route(
     *,
     whatsapp_account: str,
-    contact_number: str,
+    contact_number: str = "",
+    contact_profile: str | None = None,
     source_app: str,
     last_outgoing_message: str | None = None,
     update_last_outgoing: bool = False,
 ) -> None:
     contact = format_number(contact_number)
-    if not (whatsapp_account and contact and source_app):
+    if not (whatsapp_account and (contact or contact_profile) and source_app):
         return
-
-    doc_name = _get_route_doc_name(
-        whatsapp_account=whatsapp_account,
-        contact_number=contact,
-    )
+    filters: dict[str, Any] = {"whatsapp_account": whatsapp_account}
+    filters[
+        "contact_profile" if contact_profile else "contact_number"
+    ] = contact_profile or contact
     values: dict[str, Any] = {
         "last_source_app": source_app,
     }
@@ -64,7 +63,7 @@ def _upsert_conversation_route(
         values["last_outgoing_message"] = last_outgoing_message
         values["last_outgoing_at"] = now_datetime()
 
-    existing = frappe.db.exists(dt=ROUTE_DOCTYPE, dn=doc_name)
+    existing = frappe.db.get_value(ROUTE_DOCTYPE, filters, "name")
     if existing:
         frappe.db.set_value(
             ROUTE_DOCTYPE,
@@ -77,9 +76,15 @@ def _upsert_conversation_route(
     doc = frappe.get_doc(
         {
             "doctype": ROUTE_DOCTYPE,
-            "name": doc_name,
+            "name": (
+                _get_route_doc_name(
+                    whatsapp_account=whatsapp_account,
+                    contact_number=contact,
+                ) if contact else None
+            ),
             "whatsapp_account": whatsapp_account,
             "contact_number": contact,
+            "contact_profile": contact_profile,
             **values,
         }
     )
@@ -89,13 +94,15 @@ def _upsert_conversation_route(
 def set_last_sender_app(
     *,
     whatsapp_account: str,
-    to_number: str,
+    to_number: str = "",
+    contact_profile: str | None = None,
     source_app: str,
     message_name: str | None = None,
 ):
     _upsert_conversation_route(
         whatsapp_account=whatsapp_account,
         contact_number=to_number,
+        contact_profile=contact_profile,
         source_app=source_app,
         last_outgoing_message=message_name,
         update_last_outgoing=True,
@@ -103,20 +110,19 @@ def set_last_sender_app(
 
 
 def get_last_sender_app(
-        *, whatsapp_account: str, contact_number: str) -> str | None:
+        *, whatsapp_account: str, contact_number: str = "",
+        contact_profile: str | None = None) -> str | None:
 
     contact = format_number(contact_number)
-    if not (whatsapp_account and contact):
+    if not (whatsapp_account and (contact or contact_profile)):
         return
-
-    doc_name = _get_route_doc_name(
-        whatsapp_account=whatsapp_account,
-        contact_number=contact,
-    )
-
     last_app = frappe.db.get_value(
         ROUTE_DOCTYPE,
-        doc_name,
+        {
+            "whatsapp_account": whatsapp_account,
+            ("contact_profile" if contact_profile else "contact_number"):
+                contact_profile or contact,
+        },
         "last_source_app"
     )
     if not last_app:
@@ -127,11 +133,13 @@ def get_last_sender_app(
 def resolve_incoming_routed_app(
     *,
     whatsapp_account: str,
-    contact_number: str,
+    contact_number: str = "",
+    contact_profile: str | None = None,
 ) -> str | None:
     last_app = get_last_sender_app(
         whatsapp_account=whatsapp_account,
         contact_number=contact_number,
+        contact_profile=contact_profile,
     )
     if last_app:
         return last_app
@@ -147,28 +155,10 @@ def resolve_incoming_routed_app(
     _upsert_conversation_route(
         whatsapp_account=whatsapp_account,
         contact_number=contact_number,
+        contact_profile=contact_profile,
         source_app=str(default_app),
     )
     return str(default_app)
-
-
-def _get_forwarded_message_cache_key(message_name: str) -> str:
-    return f"{FORWARDED_INCOMING_CACHE_PREFIX}{message_name}"
-
-
-def _incoming_message_already_forwarded(message_name: str) -> bool:
-    return bool(frappe.cache().get_value(
-        _get_forwarded_message_cache_key(message_name),
-        expires=True,
-    ))
-
-
-def _mark_incoming_message_forwarded(message_name: str) -> None:
-    frappe.cache().set_value(
-        _get_forwarded_message_cache_key(message_name),
-        1,
-        expires_in_sec=30 * 24 * 60 * 60
-    )
 
 
 def _get_attach_value(*, incoming_message_doc: WhatsAppMessage) -> str | None:
@@ -317,6 +307,11 @@ def serialize_incoming_message_for_forwarding(
     return {
         "name": incoming_message_doc.name,
         "from": incoming_message_doc.get("from"),
+        "from_user_id": incoming_message_doc.get("from_user_id"),
+        "from_parent_user_id": incoming_message_doc.get("from_parent_user_id"),
+        "username": incoming_message_doc.get("username"),
+        "contact_profile": incoming_message_doc.get("contact_profile"),
+        "identity": _message_identity(incoming_message_doc),
         "to": incoming_message_doc.to,
         "profile_name": incoming_message_doc.get("profile_name"),
         "whatsapp_account": incoming_message_doc.whatsapp_account,
@@ -340,6 +335,40 @@ def serialize_incoming_message_for_forwarding(
             attachment_name=attachment_name,
         ),
         "referral": serialize_referral(incoming_message_doc),
+        "contact_payload": _structured_json(
+            incoming_message_doc.get("contact_payload")
+        ),
+        "contact_origin": incoming_message_doc.get("contact_origin"),
+    }
+
+
+def _structured_json(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _message_identity(incoming_message_doc: WhatsAppMessage) -> dict[str, Any]:
+    profile_name = incoming_message_doc.get("contact_profile")
+    if profile_name:
+        from frappe_whatsapp.utils.identity import profile_identity
+        return profile_identity(
+            frappe.get_doc("WhatsApp Profiles", str(profile_name))
+        )
+    return {
+        "profile_id": None,
+        "phone": incoming_message_doc.get("from"),
+        "user_id": incoming_message_doc.get("from_user_id"),
+        "parent_user_id": incoming_message_doc.get("from_parent_user_id"),
+        "username": incoming_message_doc.get("username"),
+        "preferred_recipient": (
+            incoming_message_doc.get("from")
+            or incoming_message_doc.get("from_user_id")
+            or incoming_message_doc.get("from_parent_user_id")
+        ),
     }
 
 
@@ -351,11 +380,12 @@ def forward_incoming_to_app(*, incoming_message_doc):
                 incoming_message_doc.get("whatsapp_account") or ""
             ),
             contact_number=str(incoming_message_doc.get("from") or ""),
+            contact_profile=str(
+                incoming_message_doc.get("contact_profile") or ""
+            ) or None,
         )
     if not routed_app:
-        return
-
-    if _incoming_message_already_forwarded(incoming_message_doc.name):
+        _mark_client_event_queued(incoming_message_doc)
         return
 
     from ..frappe_whatsapp.doctype.whatsapp_client_app import (
@@ -368,24 +398,95 @@ def forward_incoming_to_app(*, incoming_message_doc):
             "WhatsApp Client App",
             routed_app))
     if not app.enabled or not app.inbound_webhook_url:
+        _mark_client_event_queued(incoming_message_doc)
         return
 
     payload = {
-        "event": "whatsapp.incoming",
         "message": serialize_incoming_message_for_forwarding(
             incoming_message_doc=incoming_message_doc)
     }
+    from frappe_whatsapp.utils.client_delivery import queue_client_event
+    stable_source = str(
+        incoming_message_doc.message_id or incoming_message_doc.name
+    )
+    event_id = hashlib.sha256(
+        f"whatsapp.incoming:{stable_source}".encode("utf-8")
+    ).hexdigest()[:32]
+    queue_client_event(
+        client_app=str(app.name),
+        whatsapp_account=str(incoming_message_doc.whatsapp_account),
+        event_type="whatsapp.incoming",
+        event_id=event_id,
+        payload=payload,
+    )
+    _mark_client_event_queued(incoming_message_doc)
 
-    # best practice: enqueue to avoid slowing webhook response
-    make_post_request(
-        app.inbound_webhook_url,
-        data=json.dumps(payload),
-        headers={
-            "Content-Type": "application/json",
-            # Add signature or auth headers if needed
-            "X-WhatsApp-App-ID": app.app_id or ""
-        })
-    _mark_incoming_message_forwarded(incoming_message_doc.name)
+
+def _mark_client_event_queued(incoming_message_doc: Any) -> None:
+    name = getattr(incoming_message_doc, "name", None)
+    if name and frappe.db.exists("WhatsApp Message", name):
+        frappe.db.set_value(
+            "WhatsApp Message",
+            name,
+            "client_event_queued",
+            1,
+            update_modified=False,
+        )
+
+
+def recover_unqueued_incoming_events() -> None:
+    """Recover an inbound event when its initial Redis job was lost."""
+    if not frappe.db.has_column("WhatsApp Message", "client_event_queued"):
+        return
+    rows = frappe.get_all(
+        "WhatsApp Message",
+        filters={
+            "type": "Incoming",
+            "client_event_queued": 0,
+            "routed_app": ["is", "set"],
+        },
+        fields=["name", "content_type", "attach"],
+        order_by="creation asc",
+        limit=100,
+    )
+    media_types = {"image", "audio", "video", "document", "sticker"}
+    for row in rows:
+        if row.content_type in media_types and not row.attach:
+            continue
+        forward_incoming_to_app_by_name(incoming_message_name=str(row.name))
+
+
+def forward_identity_update_to_app_async(
+    *, whatsapp_account: str, profile_name: str,
+    previous_user_id: str | None,
+    previous_parent_user_id: str | None,
+    identity: dict[str, Any],
+    source_event_id: str | None = None,
+) -> None:
+    client_app = frappe.db.get_value(
+        "WhatsApp Account", whatsapp_account, "whatsapp_client_app"
+    )
+    if not client_app:
+        return
+    event_source = json.dumps(
+        [whatsapp_account, profile_name, previous_user_id,
+         identity.get("user_id"), previous_parent_user_id,
+         identity.get("parent_user_id"), source_event_id],
+        separators=(",", ":"),
+    )
+    event_id = hashlib.sha256(event_source.encode("utf-8")).hexdigest()[:32]
+    from frappe_whatsapp.utils.client_delivery import queue_client_event
+    queue_client_event(
+        client_app=str(client_app),
+        whatsapp_account=whatsapp_account,
+        event_type="whatsapp.identity_updated",
+        event_id=event_id,
+        payload={
+            "identity": identity,
+            "previous_user_id": previous_user_id,
+            "previous_parent_user_id": previous_parent_user_id,
+        },
+    )
 
 
 def forward_incoming_to_app_async(*, incoming_message_name: str):

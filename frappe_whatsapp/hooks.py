@@ -123,8 +123,10 @@ after_migrate = [
 scheduler_events = {
     "all": [
         "frappe_whatsapp.utils.trigger_whatsapp_notifications_all",
+        # Drain status-log rows created before the unified outbox rollout.
         ("frappe_whatsapp.utils.status_notifier"
          ".retry_failed_status_notifications"),
+        "frappe_whatsapp.utils.client_delivery.retry_failed_client_events",
     ],
     "hourly": [
         "frappe_whatsapp.utils.trigger_whatsapp_notifications_hourly",

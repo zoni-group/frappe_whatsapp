@@ -1,0 +1,23 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [{
+    "id": "WABA_TEST",
+    "changes": [{
+      "field": "messages",
+      "value": {
+        "metadata": {"phone_number_id": "PHONE_ID_TEST"},
+        "contacts": [{
+          "user_id": "US.13491208655302741918",
+          "parent_user_id": "US.ENT.11815799212886844830"
+        }],
+        "messages": [{
+          "from_user_id": "US.13491208655302741918",
+          "from_parent_user_id": "US.ENT.11815799212886844830",
+          "id": "wamid.fixture.parent",
+          "type": "text",
+          "text": {"body": "Parent identity"}
+        }]
+      }
+    }]
+  }]
+}

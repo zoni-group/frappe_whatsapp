@@ -9,6 +9,7 @@ from frappe import _
 from frappe.utils import now_datetime
 
 from frappe_whatsapp.utils import format_number, get_whatsapp_account
+from frappe_whatsapp.utils.identity import normalize_bsuid
 
 
 BLOCKED_CONTACT_DOCTYPE = "WhatsApp Blocked Contact"
@@ -48,26 +49,29 @@ def _blocked_contact_name(
 
 def is_contact_blocked(
         *, whatsapp_account: str | None,
-        contact_number: str | None) -> bool:
+        contact_number: str | None = None,
+        contact_profile: str | None = None,
+        user_id: str | None = None) -> bool:
     """Return True when a contact is locally blocked for an account."""
-    if not (whatsapp_account and contact_number):
+    if not whatsapp_account:
         return False
     if not _doctype_exists():
         return False
 
     number = normalize_block_number(contact_number)
-    if not number:
-        return False
-
-    return bool(frappe.db.get_value(
-        BLOCKED_CONTACT_DOCTYPE,
-        {
-            "whatsapp_account": whatsapp_account,
-            "contact_number": number,
-            "is_blocked": 1,
-        },
-        "name",
-    ))
+    for fieldname, value in (
+        ("contact_profile", contact_profile),
+        ("user_id", user_id),
+        ("contact_number", number),
+    ):
+        if value and frappe.db.get_value(
+            BLOCKED_CONTACT_DOCTYPE,
+            {"whatsapp_account": whatsapp_account, fieldname: value,
+             "is_blocked": 1},
+            "name",
+        ):
+            return True
+    return False
 
 
 def _get_account(whatsapp_account: str | None = None) -> Any:
@@ -104,7 +108,8 @@ def _raise_meta_error(response, payload: dict[str, Any]) -> None:
 def _call_meta_block_users(
     *,
     whatsapp_account: str,
-    contact_number: str,
+    contact_number: str | None = None,
+    user_id: str | None = None,
     action: Literal["block", "unblock"],
 ) -> dict[str, Any]:
     account = _get_account(whatsapp_account)
@@ -114,9 +119,10 @@ def _call_meta_block_users(
     if not getattr(account, "phone_id", None):
         frappe.throw(_("WhatsApp Account Phone ID is required."))
 
-    user_value = _meta_user_value(contact_number)
-    if not user_value:
-        frappe.throw(_("Contact number is required."))
+    normalized_user_id = normalize_bsuid(user_id, allow_parent=False) if user_id else ""
+    user_value = _meta_user_value(str(contact_number or ""))
+    if not (user_value or normalized_user_id):
+        frappe.throw(_("A contact number or regular BSUID is required."))
 
     url = f"{account.url}/{account.version}/{account.phone_id}/block_users"
     response = requests.request(
@@ -128,7 +134,10 @@ def _call_meta_block_users(
         },
         json={
             "messaging_product": "whatsapp",
-            "block_users": [{"user": user_value}],
+            "block_users": [
+                ({"user": user_value}
+                 if user_value else {"user_id": normalized_user_id})
+            ],
         },
         timeout=META_TIMEOUT_SECONDS,
     )
@@ -161,33 +170,43 @@ def _extract_meta_user(
 def _upsert_local_block(
     *,
     whatsapp_account: str,
-    contact_number: str,
+    contact_number: str | None = None,
+    user_id: str | None = None,
+    contact_profile: str | None = None,
     is_blocked: bool,
     reason: str | None = None,
     source_app: str | None = None,
     source_message: str | None = None,
 ):
     number = normalize_block_number(contact_number)
-    if not number:
-        frappe.throw(_("Contact number is required."))
-
-    name = _blocked_contact_name(
-        whatsapp_account=whatsapp_account,
-        contact_number=number,
-    )
+    normalized_user_id = normalize_bsuid(user_id, allow_parent=False) if user_id else ""
+    if not (number or normalized_user_id):
+        frappe.throw(_("A contact number or regular BSUID is required."))
+    filters = {"whatsapp_account": whatsapp_account}
+    filters["contact_profile" if contact_profile else (
+        "user_id" if normalized_user_id else "contact_number"
+    )] = contact_profile or normalized_user_id or number
     values = {
         "is_blocked": 1 if is_blocked else 0,
         "reason": reason,
         "source_app": source_app,
         "source_message": source_message,
     }
+    if number:
+        values["contact_number"] = number
+    if normalized_user_id:
+        values["user_id"] = normalized_user_id
+    if contact_profile:
+        values["contact_profile"] = contact_profile
     if is_blocked:
         values["blocked_at"] = now_datetime()
         values["unblocked_at"] = None
     else:
         values["unblocked_at"] = now_datetime()
 
-    if frappe.db.exists(BLOCKED_CONTACT_DOCTYPE, name):
+    name = frappe.db.get_value(BLOCKED_CONTACT_DOCTYPE, filters, "name")
+    if name:
+        name = str(name)
         frappe.db.set_value(
             BLOCKED_CONTACT_DOCTYPE,
             name,
@@ -198,9 +217,10 @@ def _upsert_local_block(
 
     doc = frappe.get_doc({
         "doctype": BLOCKED_CONTACT_DOCTYPE,
-        "name": name,
         "whatsapp_account": whatsapp_account,
-        "contact_number": number,
+        "contact_number": number or None,
+        "user_id": normalized_user_id or None,
+        "contact_profile": contact_profile,
         "meta_status": "Not Synced",
         **values,
     })
@@ -247,7 +267,9 @@ def _record_meta_failure(*, doc, error: Exception) -> dict[str, Any]:
 def block_contact(
     *,
     whatsapp_account: str,
-    contact_number: str,
+    contact_number: str | None = None,
+    user_id: str | None = None,
+    contact_profile: str | None = None,
     reason: str | None = None,
     source_app: str | None = None,
     source_message: str | None = None,
@@ -257,6 +279,8 @@ def block_contact(
     doc = _upsert_local_block(
         whatsapp_account=whatsapp_account,
         contact_number=contact_number,
+        user_id=user_id,
+        contact_profile=contact_profile,
         is_blocked=True,
         reason=reason,
         source_app=source_app,
@@ -269,6 +293,7 @@ def block_contact(
             payload = _call_meta_block_users(
                 whatsapp_account=whatsapp_account,
                 contact_number=contact_number,
+                user_id=user_id,
                 action="block",
             )
             _record_meta_success(doc=doc, payload=payload, action="block")
@@ -282,15 +307,37 @@ def block_contact(
         "local_blocked": True,
         "name": doc.name,
         "contact_number": normalize_block_number(contact_number),
+        "user_id": user_id,
+        "contact_profile": contact_profile,
         "whatsapp_account": whatsapp_account,
         "meta": meta,
     }
 
 
+def reapply_block_after_rotation(
+    *, whatsapp_account: str, contact_profile: str, user_id: str
+) -> None:
+    """Reapply an active profile/account block to a rotated regular BSUID."""
+    if not is_contact_blocked(
+        whatsapp_account=whatsapp_account,
+        contact_profile=contact_profile,
+    ):
+        return
+    block_contact(
+        whatsapp_account=whatsapp_account,
+        user_id=user_id,
+        contact_profile=contact_profile,
+        reason="Reapplied after WhatsApp user ID rotation",
+        sync_meta=True,
+    )
+
+
 def unblock_contact(
     *,
     whatsapp_account: str,
-    contact_number: str,
+    contact_number: str | None = None,
+    user_id: str | None = None,
+    contact_profile: str | None = None,
     reason: str | None = None,
     source_app: str | None = None,
     source_message: str | None = None,
@@ -299,6 +346,8 @@ def unblock_contact(
     doc = _upsert_local_block(
         whatsapp_account=whatsapp_account,
         contact_number=contact_number,
+        user_id=user_id,
+        contact_profile=contact_profile,
         is_blocked=False,
         reason=reason,
         source_app=source_app,
@@ -311,6 +360,7 @@ def unblock_contact(
             payload = _call_meta_block_users(
                 whatsapp_account=whatsapp_account,
                 contact_number=contact_number,
+                user_id=user_id,
                 action="unblock",
             )
             _record_meta_success(doc=doc, payload=payload, action="unblock")
@@ -324,6 +374,8 @@ def unblock_contact(
         "local_blocked": False,
         "name": doc.name,
         "contact_number": normalize_block_number(contact_number),
+        "user_id": user_id,
+        "contact_profile": contact_profile,
         "whatsapp_account": whatsapp_account,
         "meta": meta,
     }
@@ -346,6 +398,8 @@ def list_local_blocked_contacts(
             "name",
             "whatsapp_account",
             "contact_number",
+            "user_id",
+            "contact_profile",
             "meta_status",
             "source_app",
             "source_message",

@@ -19,6 +19,7 @@
   "app_id",
   "app_secret",
   "business_id",
+  "business_portfolio_id",
   "is_default_incoming",
   "is_default_outgoing",
   "allow_auto_read_receipt",
@@ -55,6 +56,13 @@
    "fieldname": "business_id",
    "fieldtype": "Data",
    "label": "Business ID"
+  },
+  {
+   "description": "Meta Business Portfolio ID used to scope business-scoped user IDs. Accounts in the same portfolio must use the same value.",
+   "fieldname": "business_portfolio_id",
+   "fieldtype": "Data",
+   "label": "Business Portfolio ID",
+   "search_index": 1
   },
   {
    "fieldname": "app_id",
@@ -143,7 +151,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-02 10:12:57.890961",
+ "modified": "2026-10-01 16:49:16.731933",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Account",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -16,6 +17,7 @@ from frappe.utils.file_lock import LockTimeoutError
 from frappe.utils.synchronization import filelock
 
 from frappe_whatsapp.utils import get_whatsapp_account
+from frappe_whatsapp.utils.identity import normalize_bsuid
 
 if TYPE_CHECKING:
     from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_account.whatsapp_account import WhatsAppAccount
@@ -39,6 +41,10 @@ CALL_PERMISSION_STATE_TTL_SECONDS = 60
 CALL_ACTION_PERMISSION_REQUEST = "Permission Request"
 CALL_ACTION_OUTBOUND = "Outbound Call"
 _AGENT_EXTENSION_PATTERN = re.compile(r"^[0-9]{1,10}$", re.ASCII)
+_IDENTITY_DESTINATION_EXTENSION_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+    re.ASCII,
+)
 _IDEMPOTENCY_KEY_PATTERN = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,139}$",
     re.ASCII,
@@ -95,6 +101,19 @@ def validate_call_phone_number(phone_number: Any) -> str:
     return number
 
 
+def validate_call_identity(
+    phone_number: Any = None, recipient: Any = None
+) -> tuple[str, str]:
+    number = validate_call_phone_number(phone_number) if phone_number else ""
+    bsuid = normalize_bsuid(recipient) if recipient and not number else ""
+    if not (number or bsuid):
+        frappe.throw(
+            _("Provide a phone number or BSUID recipient."),
+            title=_("Invalid WhatsApp Recipient"),
+        )
+    return number, bsuid
+
+
 def validate_agent_extension(agent_extension: Any) -> str:
     raw_extension = str(agent_extension or "")
     extension = raw_extension.strip()
@@ -107,6 +126,25 @@ def validate_agent_extension(agent_extension: Any) -> str:
             title=_("Invalid PBX Extension"),
         )
     return extension
+
+
+def validate_identity_destination_extension(
+    identity_destination_extension: Any,
+    *,
+    required: bool = False,
+) -> str:
+    raw_extension = str(identity_destination_extension or "")
+    if not raw_extension and not required:
+        return ""
+    if not _IDENTITY_DESTINATION_EXTENSION_PATTERN.fullmatch(raw_extension):
+        frappe.throw(
+            _(
+                "BSUID Destination Extension must be 1 to 64 characters and "
+                "contain only ASCII letters, digits, underscores, or hyphens."
+            ),
+            title=_("Invalid Calling Settings"),
+        )
+    return raw_extension
 
 
 def validate_idempotency_key(idempotency_key: Any) -> str:
@@ -415,18 +453,18 @@ def _permission_state_is_fresh(permission: Any) -> bool:
 
 def _permission_request_lock_name(
     whatsapp_account: str,
-    phone_number: str,
+    identity_value: str,
 ) -> str:
-    key = f"{whatsapp_account}:{_normalize_phone_number(phone_number)}"
+    key = f"{whatsapp_account}:{identity_value}"
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
     return f"whatsapp-call-permission-{digest}"
 
 
 def _call_start_lock_name(
     whatsapp_account: str,
-    phone_number: str,
+    identity_value: str,
 ) -> str:
-    key = f"{whatsapp_account}:{_normalize_phone_number(phone_number)}"
+    key = f"{whatsapp_account}:{identity_value}"
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
     return f"whatsapp-call-start-{digest}"
 
@@ -436,6 +474,7 @@ def _get_idempotent_call(
     idempotency_key: str | None,
     action_type: str,
     phone_number: str,
+    recipient: str = "",
     whatsapp_account: str,
     agent_extension: str,
     permission_template: str | None = None,
@@ -458,12 +497,14 @@ def _get_idempotent_call(
     expected = {
         "action_type": action_type,
         "phone_number": _normalize_phone_number(phone_number),
+        "recipient": recipient,
         "whatsapp_account": whatsapp_account,
         "agent_extension": agent_extension,
     }
     actual = {
         "action_type": str(call_doc.action_type or ""),
         "phone_number": _normalize_phone_number(call_doc.phone_number),
+        "recipient": str(getattr(call_doc, "recipient", None) or ""),
         "whatsapp_account": str(call_doc.whatsapp_account or ""),
         "agent_extension": str(call_doc.agent_extension or ""),
     }
@@ -494,15 +535,21 @@ def _get_idempotent_call(
 def _upsert_permission(
     *,
     whatsapp_account: str,
-    phone_number: str,
+    phone_number: str = "",
+    recipient: str = "",
+    contact_profile: str | None = None,
     state: dict[str, Any],
     last_requested_at: datetime | None = None,
     last_request_message: str | None = None,
 ) -> WhatsAppCallPermission:
     number = _normalize_phone_number(phone_number)
+    filters: dict[str, Any] = {"whatsapp_account": whatsapp_account}
+    filters["contact_profile" if contact_profile else (
+        "phone_number" if number else "recipient"
+    )] = contact_profile or number or recipient
     existing = frappe.db.get_value(
         "WhatsApp Call Permission",
-        {"whatsapp_account": whatsapp_account, "phone_number": number},
+        filters,
         "name",
     )
     if existing:
@@ -516,9 +563,19 @@ def _upsert_permission(
             frappe.new_doc("WhatsApp Call Permission"),
         )
         doc.whatsapp_account = whatsapp_account
-        doc.phone_number = number
+        doc.phone_number = number or None
+        doc.recipient = recipient or None
+        doc.contact_profile = contact_profile
+        if number:
+            doc.name = f"{number}-{whatsapp_account}"
 
     raw_status = str(state.get("permission_status") or "Unknown")
+    if number:
+        doc.phone_number = number
+    if recipient:
+        doc.recipient = recipient
+    if contact_profile:
+        doc.contact_profile = contact_profile
     doc.permission_status = cast(
         PermissionStatus,
         raw_status if raw_status in ACTIVE_PERMISSION_STATUSES | {
@@ -543,12 +600,17 @@ def _upsert_permission(
 
 
 def get_local_permission(
-    phone_number: str, whatsapp_account: str
+    phone_number: str, whatsapp_account: str, recipient: str = "",
+    contact_profile: str | None = None,
 ) -> WhatsAppCallPermission | None:
     number = _normalize_phone_number(phone_number)
+    filters: dict[str, Any] = {"whatsapp_account": whatsapp_account}
+    filters["contact_profile" if contact_profile else (
+        "phone_number" if number else "recipient"
+    )] = contact_profile or number or recipient
     existing = frappe.db.get_value(
         "WhatsApp Call Permission",
-        {"whatsapp_account": whatsapp_account, "phone_number": number},
+        filters,
         "name",
     )
     if not existing:
@@ -567,10 +629,11 @@ def get_local_permission(
 
 
 def refresh_permission_state(
-    phone_number: str, whatsapp_account: str | None = None
+    phone_number: str = "", whatsapp_account: str | None = None,
+    recipient: str = "", contact_profile: str | None = None,
 ) -> WhatsAppCallPermission:
     account = _get_account(whatsapp_account)
-    number = _normalize_phone_number(phone_number)
+    number, recipient = validate_call_identity(phone_number, recipient)
     token = account.get_password("token")
     url = f"{account.url}/{account.version}/{account.phone_id}/call_permissions"
 
@@ -579,7 +642,10 @@ def refresh_permission_state(
         response = requests.get(
             url,
             headers={"authorization": f"Bearer {token}"},
-            params={"user_wa_id": number},
+            params=(
+                {"user_wa_id": number}
+                if number else {"recipient": recipient}
+            ),
             timeout=30,
         )
         response.raise_for_status()
@@ -599,18 +665,24 @@ def refresh_permission_state(
     return _upsert_permission(
         whatsapp_account=str(account.name),
         phone_number=number,
+        recipient=recipient,
+        contact_profile=contact_profile,
         state=state,
     )
 
 
 def _find_pending_call(
-    *, phone_number: str, whatsapp_account: str, contact: str | None = None
+    *, phone_number: str = "", recipient: str = "",
+    whatsapp_account: str, contact: str | None = None,
+    contact_profile: str | None = None,
 ) -> WhatsAppCall | None:
     filters: dict[str, Any] = {
-        "phone_number": _normalize_phone_number(phone_number),
         "whatsapp_account": whatsapp_account,
         "status": "Permission Requested",
     }
+    filters["contact_profile" if contact_profile else (
+        "phone_number" if phone_number else "recipient"
+    )] = contact_profile or _normalize_phone_number(phone_number) or recipient
     rows = frappe.get_all(
         "WhatsApp Call",
         filters=filters,
@@ -629,7 +701,9 @@ def _find_pending_call(
 
 def get_call_state(
     *,
-    phone_number: str,
+    phone_number: str = "",
+    recipient: str = "",
+    contact_profile: str | None = None,
     contact: str | None = None,
     agent_user: str | None = None,
     agent_extension: str | None = None,
@@ -656,11 +730,15 @@ def get_call_state(
         agent_extension=agent_extension,
         throw=False,
     )
-    number = _normalize_phone_number(phone_number)
+    number, recipient = validate_call_identity(phone_number, recipient)
     account_name = str(account.name)
-    permission = get_local_permission(number, account_name)
+    permission = get_local_permission(
+        number, account_name, recipient, contact_profile
+    )
     pending = _find_pending_call(
         phone_number=number,
+        recipient=recipient,
+        contact_profile=contact_profile,
         whatsapp_account=account_name,
         contact=contact,
     )
@@ -683,7 +761,9 @@ def get_call_state(
             or (not pending and required_action_known is None)
         ):
             try:
-                permission = refresh_permission_state(number, account_name)
+                permission = refresh_permission_state(
+                    number, account_name, recipient, contact_profile
+                )
             except frappe.ValidationError:
                 return {
                     "enabled": int(bool(settings.enabled)),
@@ -765,7 +845,9 @@ def get_call_state(
 
 def _create_call(
     *,
-    phone_number: str,
+    phone_number: str = "",
+    recipient: str = "",
+    contact_profile: str | None = None,
     whatsapp_account: str,
     contact: str | None,
     agent_user: str | None,
@@ -778,7 +860,9 @@ def _create_call(
 ) -> WhatsAppCall:
     doc = cast("WhatsAppCall", frappe.get_doc({
         "doctype": "WhatsApp Call",
-        "phone_number": _normalize_phone_number(phone_number),
+        "phone_number": _normalize_phone_number(phone_number) or None,
+        "recipient": recipient or None,
+        "contact_profile": contact_profile,
         "whatsapp_account": whatsapp_account,
         "contact": contact,
         "agent_user": agent_user,
@@ -950,6 +1034,8 @@ def _send_permission_template(
     message_doc = cast("WhatsAppMessage", frappe.get_doc({
         "doctype": "WhatsApp Message",
         "to": call_doc.phone_number,
+        "recipient": getattr(call_doc, "recipient", None),
+        "contact_profile": getattr(call_doc, "contact_profile", None),
         "type": "Outgoing",
         "message_type": "Template",
         "use_template": 1,
@@ -968,7 +1054,11 @@ def _send_permission_template(
 
     _upsert_permission(
         whatsapp_account=call_doc.whatsapp_account,
-        phone_number=call_doc.phone_number,
+        phone_number=call_doc.phone_number or "",
+        recipient=str(getattr(call_doc, "recipient", None) or ""),
+        contact_profile=(
+            str(getattr(call_doc, "contact_profile", None) or "") or None
+        ),
         state={
             "permission_status": "No Permission",
             "is_permanent": 0,
@@ -1016,7 +1106,9 @@ def _permission_request_replay_result(
 
 def request_call_permission(
     *,
-    phone_number: str,
+    phone_number: str = "",
+    recipient: str = "",
+    contact_profile: str | None = None,
     contact: str | None = None,
     agent_user: str | None = None,
     agent_extension: str | None = None,
@@ -1032,7 +1124,7 @@ def request_call_permission(
         agent_extension=agent_extension,
     )
     assert resolved_extension is not None
-    number = validate_call_phone_number(phone_number)
+    number, recipient = validate_call_identity(phone_number, recipient)
     if idempotency_key:
         idempotency_key = validate_idempotency_key(idempotency_key)
     settings = _ensure_enabled()
@@ -1048,7 +1140,7 @@ def request_call_permission(
     )
 
     lock_context = filelock(
-        _permission_request_lock_name(account_name, number),
+        _permission_request_lock_name(account_name, number or recipient),
         timeout=5,
     )
     release_after_transaction = False
@@ -1059,6 +1151,7 @@ def request_call_permission(
                 idempotency_key=idempotency_key,
                 action_type=CALL_ACTION_PERMISSION_REQUEST,
                 phone_number=number,
+                recipient=recipient,
                 whatsapp_account=account_name,
                 agent_extension=resolved_extension,
                 permission_template=str(template.name),
@@ -1076,7 +1169,9 @@ def request_call_permission(
                 )
 
             try:
-                permission = refresh_permission_state(number, account_name)
+                permission = refresh_permission_state(
+                    number, account_name, recipient, contact_profile
+                )
             except frappe.ValidationError:
                 return {
                     "ok": False,
@@ -1119,6 +1214,8 @@ def request_call_permission(
 
             pending = _find_pending_call(
                 phone_number=number,
+                recipient=recipient,
+                contact_profile=contact_profile,
                 whatsapp_account=account_name,
             )
             if pending:
@@ -1167,6 +1264,8 @@ def request_call_permission(
 
             call_doc = _create_call(
                 phone_number=number,
+                recipient=recipient,
+                contact_profile=contact_profile,
                 whatsapp_account=account_name,
                 contact=contact,
                 agent_user=resolved_agent_user,
@@ -1235,7 +1334,9 @@ def _outbound_call_result(
 
 def start_outbound_call(
     *,
-    phone_number: str,
+    phone_number: str = "",
+    recipient: str = "",
+    contact_profile: str | None = None,
     contact: str | None = None,
     agent_user: str | None = None,
     agent_extension: str | None = None,
@@ -1249,7 +1350,7 @@ def start_outbound_call(
         agent_extension=agent_extension,
     )
     assert resolved_extension is not None
-    number = validate_call_phone_number(phone_number)
+    number, recipient = validate_call_identity(phone_number, recipient)
     if idempotency_key:
         idempotency_key = validate_idempotency_key(idempotency_key)
     _ensure_enabled()
@@ -1257,7 +1358,7 @@ def start_outbound_call(
 
     account_name = str(account.name)
     lock_context = filelock(
-        _call_start_lock_name(account_name, number),
+        _call_start_lock_name(account_name, number or recipient),
         timeout=5,
     )
     release_after_transaction = False
@@ -1268,6 +1369,7 @@ def start_outbound_call(
                 idempotency_key=idempotency_key,
                 action_type=CALL_ACTION_OUTBOUND,
                 phone_number=number,
+                recipient=recipient,
                 whatsapp_account=account_name,
                 agent_extension=resolved_extension,
             )
@@ -1275,7 +1377,9 @@ def start_outbound_call(
                 return _outbound_call_result(replay, replay=True)
 
             try:
-                permission = refresh_permission_state(number, account_name)
+                permission = refresh_permission_state(
+                    number, account_name, recipient, contact_profile
+                )
             except frappe.ValidationError:
                 return {
                     "ok": False,
@@ -1325,6 +1429,8 @@ def start_outbound_call(
 
             call_doc = _create_call(
                 phone_number=number,
+                recipient=recipient,
+                contact_profile=contact_profile,
                 whatsapp_account=account_name,
                 contact=contact,
                 agent_user=resolved_agent_user,
@@ -1376,6 +1482,8 @@ def _build_originate_payload(
     action_id: str,
 ) -> dict[str, str]:
     number = _normalize_phone_number(call_doc.phone_number)
+    raw_recipient = getattr(call_doc, "recipient", None)
+    recipient = normalize_bsuid(raw_recipient) if raw_recipient and not number else ""
     extension = validate_agent_extension(call_doc.agent_extension)
     values = {
         "number": number,
@@ -1387,13 +1495,33 @@ def _build_originate_payload(
         values,
         label=_("Agent Channel Template"),
     )
-    exten = _safe_format(
-        settings.destination_number_template or "{number}",
-        values,
-        label=_("Destination Number Template"),
-    )
+    if recipient:
+        exten = validate_identity_destination_extension(
+            settings.get("identity_destination_extension"),
+            required=True,
+        )
+    else:
+        exten = _safe_format(
+            settings.destination_number_template or "{number}",
+            values,
+            label=_("Destination Number Template"),
+        )
     timeout_ms = max(int(settings.originate_timeout or 30), 1) * 1000
 
+    variables = [f"WHATSAPP_CALL_ID={call_doc.name}"]
+    if recipient:
+        encoded_recipient = (
+            base64.urlsafe_b64encode(recipient.encode("utf-8"))
+            .decode("ascii")
+            .rstrip("=")
+        )
+        recipient_kind = "parent_user_id" if ".ENT." in recipient else "user_id"
+        variables.extend(
+            [
+                f"WHATSAPP_RECIPIENT_KIND={recipient_kind}",
+                f"WHATSAPP_RECIPIENT_B64={encoded_recipient}",
+            ]
+        )
     return {
         "Action": "Originate",
         "ActionID": action_id,
@@ -1404,7 +1532,7 @@ def _build_originate_payload(
         "Timeout": str(timeout_ms),
         "CallerID": f"WhatsApp <{extension}>",
         "Async": "true",
-        "Variable": f"WHATSAPP_CALL_ID={call_doc.name}",
+        "Variable": ",".join(variables),
     }
 
 
@@ -1583,7 +1711,9 @@ def originate_pending_call(call_name: str) -> WhatsAppCall:
 
 def _find_call_from_permission_reply(
     *,
-    phone_number: str,
+    phone_number: str = "",
+    recipient: str = "",
+    contact_profile: str | None = None,
     whatsapp_account: str,
     context_message_id: str | None = None,
 ) -> WhatsAppCall | None:
@@ -1596,10 +1726,12 @@ def _find_call_from_permission_reply(
         )
 
     filters: dict[str, Any] = {
-        "phone_number": _normalize_phone_number(phone_number),
         "whatsapp_account": whatsapp_account,
         "status": "Permission Requested",
     }
+    filters["contact_profile" if contact_profile else (
+        "phone_number" if phone_number else "recipient"
+    )] = contact_profile or _normalize_phone_number(phone_number) or recipient
     if request_docname:
         filters["permission_request_message"] = request_docname
 
@@ -1620,9 +1752,11 @@ def _find_call_from_permission_reply(
         rows = frappe.get_all(
             "WhatsApp Call",
             filters={
-                "phone_number": _normalize_phone_number(phone_number),
                 "whatsapp_account": whatsapp_account,
                 "status": "Permission Requested",
+                ("contact_profile" if contact_profile else (
+                    "phone_number" if phone_number else "recipient"
+                )): contact_profile or _normalize_phone_number(phone_number) or recipient,
             },
             fields=["name"],
             order_by="creation desc",
@@ -1639,7 +1773,9 @@ def _find_call_from_permission_reply(
 
 def handle_call_permission_reply(
     *,
-    contact_number: str,
+    contact_number: str = "",
+    recipient: str | None = None,
+    contact_profile: str | None = None,
     whatsapp_account_name: str,
     response: str,
     is_permanent: bool = False,
@@ -1670,11 +1806,15 @@ def handle_call_permission_reply(
     _upsert_permission(
         whatsapp_account=whatsapp_account_name,
         phone_number=contact_number,
+        recipient=str(recipient or ""),
+        contact_profile=contact_profile,
         state=state,
     )
 
     call_doc = _find_call_from_permission_reply(
         phone_number=contact_number,
+        recipient=str(recipient or ""),
+        contact_profile=contact_profile,
         whatsapp_account=whatsapp_account_name,
         context_message_id=context_message_id,
     )
@@ -1705,6 +1845,7 @@ def publish_call_update(call_doc: WhatsAppCall, message: str) -> None:
         "event_type": "whatsapp_call_update",
         "room": call_doc.contact,
         "phone_number": _normalize_phone_number(call_doc.phone_number),
+        "recipient": str(getattr(call_doc, "recipient", None) or ""),
         "whatsapp_account": call_doc.whatsapp_account,
         "call": call_doc.name,
         "status": call_doc.status,

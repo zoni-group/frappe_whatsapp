@@ -25,20 +25,25 @@ class WhatsAppProfiles(Document):
         do_not_contact: DF.Check
         do_not_contact_reason: DF.SmallText | None
         gdpr_consent: DF.Check
+        identity_scope: DF.Data | None
         is_opted_in: DF.Check
         is_opted_out: DF.Check
         language_detected_at: DF.Datetime | None
         language_detection_confidence: DF.Float
         language_source_message: DF.Data | None
-        number: DF.Data
+        merged_into: DF.Link | None
+        number: DF.Data | None
         opted_in_at: DF.Datetime | None
         opted_in_method: DF.Literal["Explicit Form", "API", "Imported", "Web Widget", "WhatsApp Reply", "Legacy"]
         opted_in_source: DF.Data | None
         opted_out_at: DF.Datetime | None
         opted_out_reason: DF.Data | None
         opted_out_source: DF.Literal["", "User Request", "Keyword", "Manual", "Complaint", "Bounce"]
+        parent_user_id: DF.Data | None
         profile_name: DF.Data | None
         title: DF.Data | None
+        user_id: DF.Data | None
+        username: DF.Data | None
         whatsapp_account: DF.Link | None
     # end: auto-generated types
 

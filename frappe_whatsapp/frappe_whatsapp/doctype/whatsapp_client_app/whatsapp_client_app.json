@@ -6,9 +6,16 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "app_id",
-  "enabled",
-  "inbound_webhook_url",
+    "app_id",
+    "enabled",
+    "api_user",
+    "allowed_accounts",
+    "webhook_secret",
+    "require_webhook_signature",
+    "subscribe_incoming",
+    "subscribe_status",
+    "subscribe_identity_updates",
+    "inbound_webhook_url",
   "outbound_default_account",
   "status_webhook_url"
  ],
@@ -19,12 +26,55 @@
    "label": "app_id",
    "unique": 1
   },
-  {
-   "default": "0",
+    {
+      "default": "0",
    "fieldname": "enabled",
    "fieldtype": "Check",
-   "label": "enabled"
-  },
+      "label": "enabled"
+    },
+    {
+      "fieldname": "api_user",
+      "fieldtype": "Link",
+      "label": "API User",
+      "options": "User"
+    },
+    {
+      "fieldname": "allowed_accounts",
+      "fieldtype": "Table",
+      "label": "Allowed WhatsApp Accounts",
+      "options": "WhatsApp Client App Account"
+    },
+    {
+      "description": "Secret used to sign client webhook deliveries.",
+      "fieldname": "webhook_secret",
+      "fieldtype": "Password",
+      "label": "Webhook Secret",
+      "length": 300
+    },
+    {
+      "default": "0",
+      "fieldname": "require_webhook_signature",
+      "fieldtype": "Check",
+      "label": "Require Webhook Signature"
+    },
+    {
+      "default": "1",
+      "fieldname": "subscribe_incoming",
+      "fieldtype": "Check",
+      "label": "Subscribe to Incoming Messages"
+    },
+    {
+      "default": "1",
+      "fieldname": "subscribe_status",
+      "fieldtype": "Check",
+      "label": "Subscribe to Message Status"
+    },
+    {
+      "default": "1",
+      "fieldname": "subscribe_identity_updates",
+      "fieldtype": "Check",
+      "label": "Subscribe to Identity Updates"
+    },
   {
    "fieldname": "inbound_webhook_url",
    "fieldtype": "Data",

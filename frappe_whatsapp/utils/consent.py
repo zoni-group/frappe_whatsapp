@@ -3,12 +3,76 @@
 Handles opt-out/opt-in keyword detection, profile consent updates,
 audit logging, and confirmation message sending.
 """
+import hashlib
+
 import frappe
 from frappe import _
 from frappe.utils import now_datetime, time_diff_in_hours
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from frappe_whatsapp.utils import format_number
+
+
+ACCOUNT_STATE_DOCTYPE = "WhatsApp Profile Account State"
+
+if TYPE_CHECKING:
+    from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_profile_account_state.whatsapp_profile_account_state import (
+        WhatsAppProfileAccountState,
+    )
+
+
+def _account_state_key(profile: str, whatsapp_account: str) -> str:
+    raw = f"{profile}\0{whatsapp_account}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def get_or_create_account_state(
+    profile: str,
+    whatsapp_account: str,
+) -> "WhatsAppProfileAccountState":
+    """Return account-specific consent state, seeding legacy profile data."""
+    key = _account_state_key(profile, whatsapp_account)
+    if frappe.db.exists(ACCOUNT_STATE_DOCTYPE, key):
+        return cast(
+            "WhatsAppProfileAccountState",
+            frappe.get_doc(ACCOUNT_STATE_DOCTYPE, key),
+        )
+
+    profile_doc = frappe.get_doc("WhatsApp Profiles", profile)
+    state = frappe.get_doc({
+        "doctype": ACCOUNT_STATE_DOCTYPE,
+        "state_key": key,
+        "whatsapp_profile": profile,
+        "whatsapp_account": whatsapp_account,
+        "consent_status": profile_doc.get("consent_status") or "Unknown",
+        "is_opted_in": profile_doc.get("is_opted_in") or 0,
+        "opted_in_at": profile_doc.get("opted_in_at"),
+        "opted_in_method": profile_doc.get("opted_in_method"),
+        "opted_in_source": profile_doc.get("opted_in_source"),
+        "is_opted_out": profile_doc.get("is_opted_out") or 0,
+        "opted_out_at": profile_doc.get("opted_out_at"),
+        "opted_out_reason": profile_doc.get("opted_out_reason"),
+        "opted_out_source": profile_doc.get("opted_out_source"),
+        "do_not_contact": profile_doc.get("do_not_contact") or 0,
+        "do_not_contact_reason": profile_doc.get("do_not_contact_reason"),
+    })
+    for row in profile_doc.get("category_consents") or []:
+        state.append("category_consents", {
+            "consent_category": row.consent_category,
+            "consented": row.consented,
+            "consented_at": row.consented_at,
+            "consent_method": row.consent_method,
+        })
+    try:
+        return cast(
+            "WhatsAppProfileAccountState",
+            state.insert(ignore_permissions=True),
+        )
+    except frappe.UniqueValidationError:
+        return cast(
+            "WhatsAppProfileAccountState",
+            frappe.get_doc(ACCOUNT_STATE_DOCTYPE, key),
+        )
 
 
 def get_compliance_settings() -> Any:
@@ -108,6 +172,8 @@ class ConsentResult:
 def verify_consent_for_send(
         phone_number: str,
         *,
+        contact_profile: str | None = None,
+        whatsapp_account: str | None = None,
         consent_category: str | None = None,
         is_transactional: bool = False,
         is_consent_request: bool = False,
@@ -138,12 +204,15 @@ def verify_consent_for_send(
         return ConsentResult(True, "Bypassed", "Consent enforcement off")
 
     number = format_number(phone_number)
-    if not number:
-        return ConsentResult(True, "Unknown", "No phone number")
+    profile_filters = (
+        {"name": contact_profile} if contact_profile else {"number": number}
+    )
+    if not number and not contact_profile:
+        return ConsentResult(True, "Unknown", "No contact identity")
 
     profile = frappe.db.get_all(
         "WhatsApp Profiles",
-        filters={"number": number},
+        filters=profile_filters,
         fields=["name", "do_not_contact", "is_opted_out", "is_opted_in"],
         limit=1,
     )
@@ -171,14 +240,19 @@ def verify_consent_for_send(
     profile = cast(
         WhatsAppProfiles,
         frappe.get_doc("WhatsApp Profiles", profile[0].name))
+    consent_subject = (
+        get_or_create_account_state(profile.name, whatsapp_account)
+        if whatsapp_account and profile.name
+        else profile
+    )
 
     # Hard block: do_not_contact always prevents sending
-    if profile.do_not_contact:
+    if consent_subject.do_not_contact:
         return ConsentResult(
             False, "Opted Out", "Contact is marked Do Not Contact")
 
     # Opted out at profile level
-    if profile.is_opted_out:
+    if consent_subject.is_opted_out:
         return ConsentResult(
             False, "Opted Out", "Contact has opted out")
 
@@ -186,7 +260,10 @@ def verify_consent_for_send(
     if consent_category and profile.name and not is_consent_request:
         cat_consented = frappe.db.get_value(
             "WhatsApp Profile Consent",
-            {"parent": profile.name, "consent_category": consent_category},
+            {
+                "parent": consent_subject.name,
+                "consent_category": consent_category,
+            },
             "consented",
         )
         if cat_consented is not None and not cat_consented:
@@ -195,7 +272,7 @@ def verify_consent_for_send(
                 f"Contact opted out of category: {consent_category}")
 
     # Explicitly opted in
-    if profile.is_opted_in:
+    if consent_subject.is_opted_in:
         return ConsentResult(True, "Opted In", "")
 
     # Consent-request templates may be sent to contacts with unknown status
@@ -227,6 +304,7 @@ def verify_consent_for_send(
 def _check_actual_service_window(
         phone_number: str,
         whatsapp_account: str | None = None,
+        contact_profile: str | None = None,
 ) -> tuple[bool, str]:
     """Query whether there is a real inbound message within the window.
 
@@ -238,16 +316,16 @@ def _check_actual_service_window(
     Returns (is_within_window, reason).
     """
     number = format_number(phone_number)
-    if not number:
-        return False, "No phone number"
+    if not number and not contact_profile:
+        return False, "No contact identity"
 
     settings = get_compliance_settings()
     window_hours = int(settings.window_hours or 24)
 
-    filters: dict[str, Any] = {
-        "type": "Incoming",
-        "from": number,
-    }
+    filters: dict[str, Any] = {"type": "Incoming"}
+    filters["contact_profile" if contact_profile else "from"] = (
+        contact_profile or number
+    )
     if whatsapp_account:
         filters["whatsapp_account"] = whatsapp_account
 
@@ -278,6 +356,7 @@ def _check_actual_service_window(
 def get_service_window_status(
         phone_number: str,
         whatsapp_account: str | None = None,
+        contact_profile: str | None = None,
 ) -> tuple[bool, str]:
     """Return whether an active user-initiated service window exists.
 
@@ -294,12 +373,15 @@ def get_service_window_status(
 
     Returns (service_window_active, reason).
     """
-    return _check_actual_service_window(phone_number, whatsapp_account)
+    return _check_actual_service_window(
+        phone_number, whatsapp_account, contact_profile
+    )
 
 
 def is_within_conversation_window(
         phone_number: str,
         whatsapp_account: str | None = None,
+        contact_profile: str | None = None,
 ) -> tuple[bool, str]:
     """Check the enforcement-aware 24-hour conversation window.
 
@@ -318,7 +400,9 @@ def is_within_conversation_window(
     if not settings.enforce_24_hour_window:
         return True, "24-hour window enforcement disabled"
 
-    return _check_actual_service_window(phone_number, whatsapp_account)
+    return _check_actual_service_window(
+        phone_number, whatsapp_account, contact_profile
+    )
 
 
 # ── Profile updates ──────────────────────────────────────────────────
@@ -326,23 +410,19 @@ def is_within_conversation_window(
 def _get_or_create_profile(
         contact_number: str,
         whatsapp_account: str,
-        profile_name: str | None = None) -> str:
+        profile_name: str | None = None,
+        contact_profile: str | None = None) -> str:
     """Return the WhatsApp Profiles *name* for a contact, creating one if
     needed."""
+    if contact_profile:
+        return contact_profile
     number = format_number(contact_number)
-    profile_name_id = frappe.db.get_value(
-        "WhatsApp Profiles", {"number": number}, "name")
+    from frappe_whatsapp.utils.identity import resolve_identity
 
-    if profile_name_id:
-        return str(profile_name_id)
-
-    doc = frappe.get_doc({
-        "doctype": "WhatsApp Profiles",
-        "number": number,
-        "profile_name": profile_name,
-        "whatsapp_account": whatsapp_account,
-    })
-    doc.insert(ignore_permissions=True)
+    doc = resolve_identity(
+        whatsapp_account=whatsapp_account,
+        identity={"phone": number, "profile_name": profile_name},
+    )
     return str(doc.name)
 
 
@@ -353,31 +433,29 @@ def process_opt_out(
         message_doc_name: str | None = None,
         keyword_match: dict[str, Any] | None = None,
         profile_name: str | None = None,
+        contact_profile: str | None = None,
 ) -> None:
     """Mark a contact as opted-out and create an audit log entry."""
     profile_id = _get_or_create_profile(
-        contact_number, whatsapp_account, profile_name)
-    from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_profiles.whatsapp_profiles import WhatsAppProfiles  # noqa: E501
-    profile = cast(
-        WhatsAppProfiles,
-        frappe.get_doc("WhatsApp Profiles", profile_id))
+        contact_number, whatsapp_account, profile_name, contact_profile)
 
-    previous_opted_out = bool(profile.is_opted_out)
+    state = get_or_create_account_state(profile_id, whatsapp_account)
+    previous_opted_out = bool(state.is_opted_out)
 
     action = (keyword_match or {}).get("action", "Full Opt-Out")
     target_category = (keyword_match or {}).get("target_category")
 
     if action == "Category Opt-Out" and target_category:
-        _category_opt_out(profile, target_category, message_doc_name)
+        _category_opt_out(state, target_category, message_doc_name, profile_id)
     else:
-        profile.is_opted_out = 1
-        profile.is_opted_in = 0
-        profile.opted_out_at = now_datetime()
-        profile.opted_out_source = "Keyword"
-        profile.opted_out_reason = (
+        state.is_opted_out = 1
+        state.is_opted_in = 0
+        state.opted_out_at = now_datetime()
+        state.opted_out_source = "Keyword"
+        state.opted_out_reason = (
             f"Keyword: {(keyword_match or {}).get('keyword', 'unknown')}")
-        profile.consent_status = "Opted Out"
-        profile.save(ignore_permissions=True)
+        state.consent_status = "Opted Out"
+        state.save(ignore_permissions=True)
 
         _log_consent(
             profile=profile_id,
@@ -387,6 +465,7 @@ def process_opt_out(
             new_status=True,
             source="Webhook",
             source_message=message_doc_name,
+            whatsapp_account=whatsapp_account,
         )
 
     # Mark the incoming message as an opt-out request
@@ -397,10 +476,10 @@ def process_opt_out(
 
 
 def _category_opt_out(
-        profile, target_category: str,
-        message_doc_name: str | None) -> None:
+        consent_subject, target_category: str,
+        message_doc_name: str | None, profile_id: str) -> None:
     """Opt-out a profile from a specific consent category."""
-    for row in (profile.get("category_consents") or []):
+    for row in (consent_subject.get("category_consents") or []):
         if row.consent_category == target_category:
             row.consented = 0
             row.consented_at = now_datetime()
@@ -409,26 +488,30 @@ def _category_opt_out(
     # Check if all categories are now opted out
     all_out = all(
         not row.consented
-        for row in (profile.get("category_consents") or []))
+        for row in (consent_subject.get("category_consents") or []))
 
     if all_out:
-        profile.consent_status = "Opted Out"
-        profile.is_opted_out = 1
-        profile.is_opted_in = 0
+        consent_subject.consent_status = "Opted Out"
+        consent_subject.is_opted_out = 1
+        consent_subject.is_opted_in = 0
     else:
-        profile.consent_status = "Partial"
+        consent_subject.consent_status = "Partial"
 
-    profile.save(ignore_permissions=True)
+    consent_subject.save(ignore_permissions=True)
 
     _log_consent(
-        profile=str(profile.name),
-        phone_number=profile.number,
+        profile=profile_id,
+        phone_number=str(
+            frappe.db.get_value("WhatsApp Profiles", profile_id, "number")
+            or ""
+        ),
         action_type="Category Opt-Out",
         consent_category=target_category,
         previous_status=True,
         new_status=False,
         source="Webhook",
         source_message=message_doc_name,
+        whatsapp_account=str(consent_subject.whatsapp_account),
     )
 
 
@@ -438,27 +521,25 @@ def process_opt_in(
         whatsapp_account: str,
         message_doc_name: str | None = None,
         profile_name: str | None = None,
+        contact_profile: str | None = None,
 ) -> None:
     """Mark a contact as opted-in and create an audit log entry."""
     profile_id = _get_or_create_profile(
-        contact_number, whatsapp_account, profile_name)
-    from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_profiles.whatsapp_profiles import WhatsAppProfiles  # noqa: E501
-    profile = cast(
-        WhatsAppProfiles,
-        frappe.get_doc("WhatsApp Profiles", profile_id))
+        contact_number, whatsapp_account, profile_name, contact_profile)
 
-    previous_opted_in = bool(profile.is_opted_in)
+    state = get_or_create_account_state(profile_id, whatsapp_account)
+    previous_opted_in = bool(state.is_opted_in)
 
-    profile.is_opted_in = 1
-    profile.is_opted_out = 0
-    profile.opted_in_at = now_datetime()
-    profile.opted_in_method = "WhatsApp Reply"
-    profile.consent_status = "Opted In"
+    state.is_opted_in = 1
+    state.is_opted_out = 0
+    state.opted_in_at = now_datetime()
+    state.opted_in_method = "WhatsApp Reply"
+    state.consent_status = "Opted In"
     # Clear opt-out fields
-    profile.opted_out_at = None
-    profile.opted_out_reason = None
-    profile.opted_out_source = ""
-    profile.save(ignore_permissions=True)
+    state.opted_out_at = None
+    state.opted_out_reason = None
+    state.opted_out_source = ""
+    state.save(ignore_permissions=True)
 
     _log_consent(
         profile=profile_id,
@@ -468,6 +549,7 @@ def process_opt_in(
         new_status=True,
         source="Webhook",
         source_message=message_doc_name,
+        whatsapp_account=whatsapp_account,
     )
 
     # Mark the incoming message as an opt-in request
@@ -641,11 +723,13 @@ def _log_consent(
         source: str,
         source_message: str | None = None,
         consent_category: str | None = None,
+        whatsapp_account: str | None = None,
 ) -> None:
     """Create a WhatsApp Consent Log entry."""
     frappe.get_doc({
         "doctype": "WhatsApp Consent Log",
         "profile": profile,
+        "whatsapp_account": whatsapp_account,
         "phone_number": phone_number,
         "action": action_type,
         "consent_category": consent_category,
@@ -720,6 +804,8 @@ def enforce_marketing_template_compliance(template) -> None:
 def enforce_template_send_rules(
         template, *,
         to_number: str | None = None,
+        contact_profile: str | None = None,
+        whatsapp_account: str | None = None,
         service_window_active: bool = False,
 ) -> None:
     """Enforce template status + opt-in requirements before sending."""
@@ -745,13 +831,16 @@ def enforce_template_send_rules(
         return
 
     number = format_number(str(to_number or ""))
-    if not number:
-        frappe.throw(_("Cannot verify opt-in without a recipient number."))
+    if not number and not contact_profile:
+        frappe.throw(_("Cannot verify opt-in without a recipient identity."))
 
     from frappe_whatsapp.frappe_whatsapp.doctype.whatsapp_profiles.whatsapp_profiles import WhatsAppProfiles  # noqa: E501
     profile = frappe.db.get_all(
         "WhatsApp Profiles",
-        filters={"number": number},
+        filters=(
+            {"name": contact_profile}
+            if contact_profile else {"number": number}
+        ),
         fields=["name", "do_not_contact", "is_opted_out", "is_opted_in"],
         limit=1,
     )
@@ -767,13 +856,18 @@ def enforce_template_send_rules(
     profile = cast(
         WhatsAppProfiles,
         frappe.get_doc("WhatsApp Profiles", profile[0].name))
+    consent_subject = (
+        get_or_create_account_state(profile.name, whatsapp_account)
+        if whatsapp_account and profile.name
+        else profile
+    )
 
     # DNC and explicit opt-out always block, even within the service window.
-    if profile.do_not_contact or profile.is_opted_out:
+    if consent_subject.do_not_contact or consent_subject.is_opted_out:
         frappe.throw(
             _("Recipient has opted out. Cannot send this template."))
 
-    if not profile.is_opted_in:
+    if not consent_subject.is_opted_in:
         # Active service window: allow sending to unknown-consent contacts.
         if service_window_active:
             return

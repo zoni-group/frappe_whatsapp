@@ -1,12 +1,14 @@
 {
  "actions": [],
- "autoname": "format:{phone_number}-{whatsapp_account}",
+ "autoname": "hash",
  "creation": "2026-07-01 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "whatsapp_account",
+  "contact_profile",
   "phone_number",
+  "recipient",
   "permission_status",
   "is_permanent",
   "expires_at",
@@ -33,7 +35,20 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Phone Number",
-   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "contact_profile",
+   "fieldtype": "Link",
+   "label": "WhatsApp Profile",
+   "options": "WhatsApp Profiles",
+   "search_index": 1
+  },
+  {
+   "fieldname": "recipient",
+   "fieldtype": "Data",
+   "label": "BSUID Recipient",
+   "length": 191,
    "search_index": 1
   },
   {
@@ -84,11 +99,11 @@
  ],
  "grid_page_length": 50,
  "links": [],
- "modified": "2026-07-10 20:24:13.295871",
+ "modified": "2026-10-01 16:25:24.568139",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Call Permission",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

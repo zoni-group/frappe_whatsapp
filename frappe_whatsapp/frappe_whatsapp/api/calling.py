@@ -17,6 +17,7 @@ from frappe_whatsapp.utils.calling import (
 from frappe_whatsapp.utils.calling import (
     validate_agent_extension,
     validate_call_permission_language_code,
+    validate_call_identity,
     validate_call_phone_number,
     validate_idempotency_key,
 )
@@ -82,6 +83,7 @@ def _validate_external_reference(value: Any) -> str | None:
 def _validate_client_context(
     *,
     phone_number: Any,
+    recipient: Any = None,
     whatsapp_account: Any,
     agent_extension: Any,
     source_app: Any,
@@ -89,7 +91,7 @@ def _validate_client_context(
 ) -> dict[str, str | None]:
     # Validate untrusted strings before any database or network operation.
     extension = validate_agent_extension(agent_extension)
-    number = validate_call_phone_number(phone_number)
+    number, bsuid = validate_call_identity(phone_number, recipient)
     account_name = str(whatsapp_account or "").strip()
     app_name = str(source_app or "").strip()
     if not account_name:
@@ -115,8 +117,24 @@ def _validate_client_context(
             title=_("Inactive Source App"),
         )
 
+    allowed_accounts = frappe.get_all(
+        "WhatsApp Client App Account",
+        filters={"parent": app_name, "whatsapp_account": account_name},
+        fields=["name"],
+        limit=1,
+    )
+    default_account = frappe.db.get_value(
+        "WhatsApp Client App", app_name, "outbound_default_account"
+    )
+    if not allowed_accounts and str(default_account or "") != account_name:
+        frappe.throw(
+            _("WhatsApp Account is not allowed for this client app."),
+            frappe.PermissionError,
+        )
+
     return {
         "phone_number": number,
+        "recipient": bsuid,
         "whatsapp_account": account_name,
         "agent_extension": extension,
         "source_app": app_name,
@@ -124,12 +142,18 @@ def _validate_client_context(
     }
 
 
-def _permission_metadata(*, phone_number: str, whatsapp_account: str) -> dict[str, Any]:
+def _permission_metadata(
+    *, phone_number: str, recipient: str, whatsapp_account: str
+) -> dict[str, Any]:
+    identity_filter = (
+        {"phone_number": phone_number} if phone_number
+        else {"recipient": recipient}
+    )
     name = frappe.db.get_value(
         "WhatsApp Call Permission",
         {
-            "phone_number": phone_number,
             "whatsapp_account": whatsapp_account,
+            **identity_filter,
         },
         "name",
     )
@@ -163,6 +187,7 @@ def _response(
     status = _canonical_status(service_result.get("status"))
     permission = _permission_metadata(
         phone_number=str(context["phone_number"]),
+        recipient=str(context.get("recipient") or ""),
         whatsapp_account=str(context["whatsapp_account"]),
     )
     pending_call_id = (
@@ -197,6 +222,8 @@ def _response(
         "whatsapp_account": context["whatsapp_account"],
         "source_app": context["source_app"],
         "external_reference": context["external_reference"],
+        "phone_number": context["phone_number"],
+        "recipient": context.get("recipient"),
         "idempotency_key": idempotency_key,
     }
     if service_result.get("failure_reason"):
@@ -215,15 +242,17 @@ def _response(
 
 @frappe.whitelist(methods=["GET"])
 def get_call_state(
-    phone_number: str,
     whatsapp_account: str,
     agent_extension: str,
     source_app: str,
+    phone_number: str | None = None,
+    recipient: str | None = None,
     external_reference: str | None = None,
 ) -> dict[str, Any]:
     _require_calling_api_role()
     context = _validate_client_context(
         phone_number=phone_number,
+        recipient=recipient,
         whatsapp_account=whatsapp_account,
         agent_extension=agent_extension,
         source_app=source_app,
@@ -231,6 +260,7 @@ def get_call_state(
     )
     result = get_service_call_state(
         phone_number=str(context["phone_number"]),
+        recipient=str(context.get("recipient") or ""),
         agent_extension=str(context["agent_extension"]),
         whatsapp_account=str(context["whatsapp_account"]),
     )
@@ -245,7 +275,8 @@ def get_call_state(
 
 def _mutation_context(
     *,
-    phone_number: str,
+    phone_number: str | None,
+    recipient: str | None,
     whatsapp_account: str,
     agent_extension: str,
     source_app: str,
@@ -254,6 +285,7 @@ def _mutation_context(
 ) -> tuple[dict[str, str | None], str]:
     context = _validate_client_context(
         phone_number=phone_number,
+        recipient=recipient,
         whatsapp_account=whatsapp_account,
         agent_extension=agent_extension,
         source_app=source_app,
@@ -264,11 +296,12 @@ def _mutation_context(
 
 @frappe.whitelist(methods=["POST"])
 def request_call_permission(
-    phone_number: str,
     whatsapp_account: str,
     agent_extension: str,
     source_app: str,
     idempotency_key: str,
+    phone_number: str | None = None,
+    recipient: str | None = None,
     external_reference: str | None = None,
     language_code: str | None = None,
 ) -> dict[str, Any]:
@@ -278,6 +311,7 @@ def request_call_permission(
     )
     context, key = _mutation_context(
         phone_number=phone_number,
+        recipient=recipient,
         whatsapp_account=whatsapp_account,
         agent_extension=agent_extension,
         source_app=source_app,
@@ -286,6 +320,7 @@ def request_call_permission(
     )
     result = request_service_call_permission(
         phone_number=str(context["phone_number"]),
+        recipient=str(context.get("recipient") or ""),
         agent_extension=str(context["agent_extension"]),
         whatsapp_account=str(context["whatsapp_account"]),
         source_app=str(context["source_app"]),
@@ -298,16 +333,18 @@ def request_call_permission(
 
 @frappe.whitelist(methods=["POST"])
 def start_outbound_call(
-    phone_number: str,
     whatsapp_account: str,
     agent_extension: str,
     source_app: str,
     idempotency_key: str,
+    phone_number: str | None = None,
+    recipient: str | None = None,
     external_reference: str | None = None,
 ) -> dict[str, Any]:
     _require_calling_api_role()
     context, key = _mutation_context(
         phone_number=phone_number,
+        recipient=recipient,
         whatsapp_account=whatsapp_account,
         agent_extension=agent_extension,
         source_app=source_app,
@@ -316,6 +353,7 @@ def start_outbound_call(
     )
     result = start_service_outbound_call(
         phone_number=str(context["phone_number"]),
+        recipient=str(context.get("recipient") or ""),
         agent_extension=str(context["agent_extension"]),
         whatsapp_account=str(context["whatsapp_account"]),
         source_app=str(context["source_app"]),

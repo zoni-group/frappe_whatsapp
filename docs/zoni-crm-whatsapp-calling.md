@@ -12,6 +12,10 @@ The CRM does not call Meta, Asterisk, or FreePBX directly. It must not receive
 or store the Meta access token, AMI credentials, SIP configuration, or PBX dial
 prefix. Those details remain in Frappe.
 
+For CRM identity storage, BSUID intake, outbound messaging, migration, and the
+future direct webhook path, see
+[Zoni CRM Service: business-scoped WhatsApp user IDs](./zoni-crm-bsuid.md).
+
 ## Production contract
 
 | Setting | Production value |
@@ -20,6 +24,7 @@ prefix. Those details remain in Frappe.
 | WhatsApp account used for calling | `18299477544` |
 | CRM source app | `zoni_crm_epTzT5AjLF6LdIBht7b1RydPAsH3LiIk` |
 | Example WhatsApp user | `+12012345678` |
+| Example regular BSUID | `US.AbCd1234` |
 | Example PBX extension | `847` |
 | Required Frappe role | `WhatsApp Calling API` |
 
@@ -85,7 +90,8 @@ top-level `message` object. Application logic should therefore read
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `phone_number` | Yes | International number; punctuation is removed and 8-15 digits are required |
+| `phone_number` | One identity | International number; punctuation is removed and 8-15 digits are required |
+| `recipient` | One identity | Regular or parent BSUID; `phone_number` takes precedence when both are supplied |
 | `whatsapp_account` | Yes | Exact active WhatsApp Account name; use `18299477544` |
 | `agent_extension` | Yes | Extension resolved by the CRM backend |
 | `source_app` | Yes | Use the production CRM source app shown above |
@@ -108,6 +114,12 @@ Replace `<crm-lead-uid>` in the examples with the real CRM lead UID, or omit
 `external_reference` when there is no CRM record to correlate. The
 `source_app` value is a routing identifier, not an authentication credential;
 authentication still requires the integration user's API key and secret.
+
+The examples below use a phone. For a BSUID-only contact, replace
+`phone_number` with `recipient` in all three requests. CRM chooses an active
+phone first; otherwise it chooses the active regular BSUID and then the active
+parent BSUID. Frappe echoes both identity fields in successful results so CRM
+can audit the selected destination.
 
 ### 1. Check current permission
 
@@ -242,8 +254,8 @@ Asterisk to originate the call. A successful queue response looks like:
 In the current production routing, Frappe asks Asterisk to call
 `Local/847@from-internal` and route the WhatsApp destination through the
 server-side calling dialplan. The agent answers extension 847, and the PBX/SIP
-integration establishes the WhatsApp leg to `+12012345678`. The CRM must send
-the plain WhatsApp number, not the internal dial prefix.
+integration establishes the WhatsApp leg. CRM sends the plain WhatsApp phone
+or BSUID, never the internal dial prefix or encoded AMI variables.
 
 `pbx_queued` means AMI accepted the asynchronous Originate request. It does not
 prove that extension 847 exists, rang, answered, or that the WhatsApp user
@@ -261,9 +273,9 @@ call-progress events.
 | `pbx_queued` | Show queued/dialing, not connected |
 | `failed` | Show `failure_reason`; a deliberate new attempt needs a new UUID |
 
-An idempotency key is bound to the action, phone number, WhatsApp account,
-extension, and (for permission requests) selected template. Reusing it with
-different bound values is an idempotency conflict.
+An idempotency key is bound to the action, selected phone or BSUID, WhatsApp
+account, extension, and (for permission requests) selected template. Reusing
+it with different bound values is an idempotency conflict.
 
 Frappe validation/authentication errors may use a non-2xx response with
 `exc_type` and `exception`/`exc` instead of the normal calling result. Treat

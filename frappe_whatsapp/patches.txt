@@ -5,3 +5,4 @@
 frappe_whatsapp.patches.set_default_in_whatsapp_settings
 frappe_whatsapp.patches.migrate_to_multi_account
 frappe_whatsapp.patches.create_whatsapp_calling_api_role
+frappe_whatsapp.patches.backfill_business_scoped_identities

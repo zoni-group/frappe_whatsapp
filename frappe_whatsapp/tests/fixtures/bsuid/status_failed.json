@@ -1,0 +1,21 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [{
+    "id": "WABA_TEST",
+    "changes": [{
+      "field": "messages",
+      "value": {
+        "metadata": {"phone_number_id": "PHONE_ID_TEST"},
+        "statuses": [{
+          "id": "wamid.fixture.outbound",
+          "status": "failed",
+          "errors": [{
+            "code": 131026,
+            "title": "Message undeliverable",
+            "error_data": {"details": "Fixture failure"}
+          }]
+        }]
+      }
+    }]
+  }]
+}

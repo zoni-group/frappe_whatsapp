@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "creation": "2026-02-17 15:59:15.250967",
+ "creation": "2026-10-02 15:08:23.603733",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
@@ -11,6 +11,15 @@
   "status",
   "to",
   "from",
+  "recipient",
+  "contact_profile",
+  "from_user_id",
+  "from_parent_user_id",
+  "recipient_user_id",
+  "recipient_parent_user_id",
+  "status_recipient_phone",
+  "status_contacts",
+  "username",
   "profile_name",
   "use_template",
   "template",
@@ -25,6 +34,8 @@
   "is_voice_note",
   "attach",
   "buttons",
+  "contact_payload",
+  "contact_origin",
   "body_param",
   "whatsapp_account",
   "section_break_flow",
@@ -46,7 +57,9 @@
   "section_break_fs5x",
   "source_app",
   "routed_app",
+  "client_event_queued",
   "external_reference",
+  "client_idempotency_key",
   "marketing_attribution_section",
   "referral_source_type",
   "referral_source_id",
@@ -121,6 +134,74 @@
    "set_only_once": 1
   },
   {
+   "depends_on": "eval:(doc.type==\"Outgoing\");",
+   "description": "Regular or parent business-scoped user ID used when no phone number is available.",
+   "fieldname": "recipient",
+   "fieldtype": "Data",
+   "label": "BSUID Recipient",
+   "length": 191,
+   "search_index": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "contact_profile",
+   "fieldtype": "Link",
+   "label": "WhatsApp Profile",
+   "options": "WhatsApp Profiles",
+   "search_index": 1
+  },
+  {
+   "fieldname": "from_user_id",
+   "fieldtype": "Data",
+   "label": "From User ID",
+   "length": 191,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "from_parent_user_id",
+   "fieldtype": "Data",
+   "label": "From Parent User ID",
+   "length": 191,
+   "read_only": 1
+  },
+  {
+   "fieldname": "recipient_user_id",
+   "fieldtype": "Data",
+   "label": "Recipient User ID",
+   "length": 191,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "recipient_parent_user_id",
+   "fieldtype": "Data",
+   "label": "Recipient Parent User ID",
+   "length": 191,
+   "read_only": 1
+  },
+  {
+   "description": "Raw recipient phone reported by the latest Meta status webhook.",
+   "fieldname": "status_recipient_phone",
+   "fieldtype": "Data",
+   "label": "Status Recipient Phone",
+   "read_only": 1
+  },
+  {
+   "description": "Raw contacts array reported by the latest Meta status webhook.",
+   "fieldname": "status_contacts",
+   "fieldtype": "JSON",
+   "label": "Status Contacts",
+   "read_only": 1
+  },
+  {
+   "fieldname": "username",
+   "fieldtype": "Data",
+   "label": "WhatsApp Username",
+   "length": 191,
+   "read_only": 1
+  },
+  {
    "default": "0",
    "fieldname": "use_template",
    "fieldtype": "Check",
@@ -181,7 +262,7 @@
    "fieldname": "content_type",
    "fieldtype": "Select",
    "label": "Content Type",
-   "options": "text\ndocument\nimage\nsticker\nvideo\naudio\nflow\nreaction\nlocation\ncontact\nbutton\ninteractive",
+   "options": "text\ndocument\nimage\nsticker\nvideo\naudio\nflow\nreaction\nlocation\ncontact\ncontact_request\nbutton\ninteractive",
    "reqd": 1
   },
   {
@@ -205,6 +286,20 @@
    "fieldname": "buttons",
    "fieldtype": "JSON",
    "label": "Buttons"
+  },
+  {
+   "depends_on": "eval:doc.content_type=='contact'",
+   "fieldname": "contact_payload",
+   "fieldtype": "JSON",
+   "label": "Shared Contact Payload",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.content_type=='contact'",
+   "fieldname": "contact_origin",
+   "fieldtype": "Data",
+   "label": "Contact Origin",
+   "read_only": 1
   },
   {
    "fieldname": "section_break_iyjf",
@@ -337,10 +432,25 @@
    "options": "WhatsApp Client App"
   },
   {
+   "default": "0",
+   "fieldname": "client_event_queued",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Client Event Queued",
+   "read_only": 1
+  },
+  {
    "description": "The sender app\u2019s own message id / correlation id",
    "fieldname": "external_reference",
    "fieldtype": "Data",
    "label": "External Reference"
+  },
+  {
+   "fieldname": "client_idempotency_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Client Idempotency Key",
+   "unique": 1
   },
   {
    "collapsible": 1,
@@ -545,7 +655,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-02 10:15:01.984691",
+ "modified": "2026-10-09 11:08:08.296189",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Message",

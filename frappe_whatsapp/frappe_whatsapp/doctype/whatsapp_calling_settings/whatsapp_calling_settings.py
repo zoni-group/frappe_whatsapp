@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from frappe.model.document import Document
 
+from frappe_whatsapp.utils.calling import (
+    validate_identity_destination_extension,
+)
+
 
 class WhatsAppCallingSettings(Document):
     # begin: auto-generated types
@@ -22,6 +26,10 @@ class WhatsAppCallingSettings(Document):
         destination_context: DF.Data | None
         destination_number_template: DF.Data | None
         enabled: DF.Check
+        identity_destination_extension: DF.Data | None
         originate_timeout: DF.Int
     # end: auto-generated types
-    pass
+    def validate(self) -> None:
+        self.identity_destination_extension = validate_identity_destination_extension(
+            self.identity_destination_extension,
+        )

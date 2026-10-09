@@ -14,6 +14,12 @@ from typing import cast, Any
 from urllib.parse import unquote, urlparse
 from frappe_whatsapp.utils.routing import set_last_sender_app
 from frappe_whatsapp.utils.meta import request_meta_json
+from frappe_whatsapp.utils.identity import (
+    normalize_bsuid,
+    profile_identity,
+    resolve_identity,
+    set_meta_recipient,
+)
 
 from frappe_whatsapp.utils import get_whatsapp_account, format_number
 from frappe_whatsapp.utils.consent import (
@@ -87,10 +93,15 @@ class WhatsAppMessage(Document):
         body_param: DF.JSON | None
         bulk_message_reference: DF.Data | None
         buttons: DF.JSON | None
+        client_event_queued: DF.Check
+        client_idempotency_key: DF.Data | None
         consent_bypass_reason: DF.Data | None
         consent_checked: DF.Check
         consent_status_at_send: DF.Literal["Opted In", "Opted Out", "Unknown", "Bypassed"]
-        content_type: DF.Literal["text", "document", "image", "sticker", "video", "audio", "flow", "reaction", "location", "contact", "button", "interactive"]
+        contact_origin: DF.Data | None
+        contact_payload: DF.JSON | None
+        contact_profile: DF.Link | None
+        content_type: DF.Literal["text", "document", "image", "sticker", "video", "audio", "flow", "reaction", "location", "contact", "contact_request", "button", "interactive"]
         conversation_id: DF.Data | None
         external_reference: DF.Data | None
         flow: DF.Link | None
@@ -98,6 +109,8 @@ class WhatsAppMessage(Document):
         flow_response: DF.JSON | None
         flow_screen: DF.Data | None
         flow_token: DF.Data | None
+        from_parent_user_id: DF.Data | None
+        from_user_id: DF.Data | None
         is_opt_in_request: DF.Check
         is_opt_out_request: DF.Check
         is_reply: DF.Check
@@ -113,6 +126,9 @@ class WhatsAppMessage(Document):
         meta_campaign_id: DF.Data | None
         meta_campaign_name: DF.Data | None
         profile_name: DF.Data | None
+        recipient: DF.Data | None
+        recipient_parent_user_id: DF.Data | None
+        recipient_user_id: DF.Data | None
         reference_doctype: DF.Link | None
         reference_name: DF.DynamicLink | None
         referral_ctwa_clid: DF.Data | None
@@ -123,29 +139,84 @@ class WhatsAppMessage(Document):
         routed_app: DF.Link | None
         source_app: DF.Link | None
         status: DF.Data | None
+        status_contacts: DF.JSON | None
         status_error_code: DF.Data | None
         status_error_details: DF.SmallText | None
         status_error_href: DF.Data | None
         status_error_message: DF.SmallText | None
         status_error_payload: DF.JSON | None
         status_error_title: DF.Data | None
+        status_recipient_phone: DF.Data | None
         template: DF.Link | None
         template_header_parameters: DF.SmallText | None
         template_parameters: DF.SmallText | None
         to: DF.Data | None
         type: DF.Literal["Outgoing", "Incoming"]
         use_template: DF.Check
+        username: DF.Data | None
         whatsapp_account: DF.Link | None
         within_conversation_window: DF.Check
     # end: auto-generated types
 
     def validate(self):
         self.set_whatsapp_account()
+        profile = self._resolve_outgoing_contact_profile()
+        if self.is_new() and profile:
+            self._populate_recipient_identity(profile)
+
+    def _populate_recipient_identity(self, profile):
+        """Snapshot known BSUIDs after sending, without changing the destination."""
+        identity = profile_identity(profile)
+        self.recipient_user_id = (
+            self.recipient_user_id or identity.get("user_id")
+        )
+        self.recipient_parent_user_id = (
+            self.recipient_parent_user_id or identity.get("parent_user_id")
+        )
+        if not self.get("recipient"):
+            self.recipient = self.recipient_user_id or self.recipient_parent_user_id
+
+    def _resolve_outgoing_contact_profile(self):
+        """Resolve the selected outbound identity before compliance checks."""
+        if self.type != "Outgoing":
+            return
+
+        if not (self.to or self.get("recipient")):
+            frappe.throw(_("A phone number or BSUID recipient is required."))
+
+        selected_recipient = (
+            str(self.get("recipient") or "") if not self.to else ""
+        )
+        identity = {
+            "phone": self.to,
+            "user_id": (
+                selected_recipient
+                if selected_recipient and ".ENT." not in selected_recipient
+                else None
+            ),
+            "parent_user_id": (
+                selected_recipient
+                if selected_recipient and ".ENT." in selected_recipient
+                else None
+            ),
+            "profile_name": self.profile_name,
+        }
+        profile = resolve_identity(
+            whatsapp_account=str(self.whatsapp_account), identity=identity
+        )
+        self.contact_profile = profile.name
+        return profile
 
     def on_update(self):
         self.update_profile_name()
 
     def update_profile_name(self):
+        if self.get("contact_profile") and self.profile_name:
+            frappe.db.set_value(
+                "WhatsApp Profiles", self.contact_profile,
+                "profile_name", self.profile_name,
+            )
+            return
         number = self.get("from")
         if not number:
             return
@@ -164,14 +235,21 @@ class WhatsAppMessage(Document):
                 profile_id, "profile_name", self.profile_name)
 
     def create_whatsapp_profile(self):
-        number = format_number(str(self.get("from") or self.to))
-        if not frappe.db.exists("WhatsApp Profiles", {"number": number}):
-            frappe.get_doc({
-                "doctype": "WhatsApp Profiles",
+        if self.get("contact_profile"):
+            return
+        recipient = str(self.get("recipient") or "")
+        if self.get("from") or self.to:
+            recipient = ""
+        profile = resolve_identity(
+            whatsapp_account=str(self.whatsapp_account),
+            identity={
+                "phone": self.get("from") or self.to,
+                "user_id": recipient if recipient and ".ENT." not in recipient else None,
+                "parent_user_id": recipient if ".ENT." in recipient else None,
                 "profile_name": self.profile_name,
-                "number": number,
-                "whatsapp_account": self.whatsapp_account
-            }).insert(ignore_permissions=True)
+            },
+        )
+        self.contact_profile = profile.name
 
     def set_whatsapp_account(self):
         """Set whatsapp account to default if missing"""
@@ -234,6 +312,8 @@ class WhatsAppMessage(Document):
 
         result = verify_consent_for_send(
             str(self.to or ""),
+            contact_profile=str(self.get("contact_profile") or "") or None,
+            whatsapp_account=str(self.whatsapp_account or "") or None,
             consent_category=consent_category,
             is_transactional=is_transactional,
             is_consent_request=(
@@ -259,10 +339,11 @@ class WhatsAppMessage(Document):
     """Record last sender app"""
     def after_insert(self):
         if (self.type == "Outgoing" and self.source_app and
-                self.to and self.whatsapp_account):
+                (self.to or self.get("recipient")) and self.whatsapp_account):
             set_last_sender_app(
                 whatsapp_account=self.whatsapp_account,
-                to_number=self.to,
+                to_number=str(self.to or ""),
+                contact_profile=str(self.get("contact_profile") or "") or None,
                 source_app=str(self.source_app),
                 message_name=self.name,
             )
@@ -401,6 +482,10 @@ class WhatsAppMessage(Document):
     def before_insert(self):
         """Send message."""
         self.set_whatsapp_account()
+        # Frappe runs before_insert before validate. Resolve the outbound
+        # identity here so service-window and consent checks can use the
+        # stable profile for phone-less BSUID recipients.
+        self._resolve_outgoing_contact_profile()
 
         if self.use_template and self.template:
             self.message_type = "Template"
@@ -408,7 +493,7 @@ class WhatsAppMessage(Document):
         # Consent + window checks only for messages not yet sent.
         # Docs created with message_id already set (e.g. from
         # notification.notify()) are log records of already-sent messages.
-        if self.type == "Outgoing" and self.to and not self.message_id:
+        if self.type == "Outgoing" and (self.to or self.get("recipient")) and not self.message_id:
             # ── Step 1: actual service window (for consent bypass) ──────
             # get_service_window_status always queries the DB and ignores
             # the enforce_24_hour_window toggle.  An active window means
@@ -416,7 +501,8 @@ class WhatsAppMessage(Document):
             # without a recorded opt-in.  Disabling enforcement must NOT
             # fabricate a phantom service window.
             service_window_active, window_reason = get_service_window_status(
-                str(self.to or ""), whatsapp_account=self.whatsapp_account)
+                str(self.to or ""), whatsapp_account=self.whatsapp_account,
+                contact_profile=str(self.get("contact_profile") or "") or None)
             self.within_conversation_window = 1 if service_window_active else 0
 
             # ── Step 2: consent check (may be bypassed by service window) ─
@@ -443,9 +529,11 @@ class WhatsAppMessage(Document):
 
             data: dict[str, Any] = {
                 "messaging_product": "whatsapp",
-                "to": format_number(self.to),
                 "type": self.content_type,
             }
+            set_meta_recipient(
+                data, to=self.to, recipient=self.get("recipient")
+            )
             if self.is_reply and self.reply_to_message_id:
                 data["context"] = {"message_id": self.reply_to_message_id}
             if self.content_type in ["document", "image", "video"]:
@@ -521,6 +609,7 @@ class WhatsAppMessage(Document):
                             }]
                         }
                     }
+
                 else:
                     # Use button message for 3 or fewer options
                     data["interactive"] = {
@@ -538,6 +627,17 @@ class WhatsAppMessage(Document):
                             ]
                         }
                     }
+
+            elif self.content_type == "contact_request":
+                data["type"] = "interactive"
+                data["interactive"] = {
+                    "type": "request_contact_info",
+                    "body": {
+                        "text": self.message
+                        or _("Please share your contact information.")
+                    },
+                    "action": {"name": "request_contact_info"},
+                }
 
             elif self.content_type == "flow":
                 # WhatsApp Flow message
@@ -644,9 +744,19 @@ class WhatsAppMessage(Document):
             frappe.get_doc("WhatsApp Templates", self.template)
         )
         enforce_marketing_template_compliance(template)
+        if (
+            str(template.category or "").upper() in {"AUTHENTICATION", "OTP"}
+            and not self.to
+        ):
+            frappe.throw(
+                _("Authentication templates require a phone number; BSUID-only delivery is not supported by Meta."),
+                title=_("Phone Number Required"),
+            )
         enforce_template_send_rules(
             template,
             to_number=str(self.to or ""),
+            contact_profile=str(self.get("contact_profile") or "") or None,
+            whatsapp_account=str(self.whatsapp_account or "") or None,
             service_window_active=bool(self.within_conversation_window),
         )
         if template.is_call_permission_request:
@@ -656,7 +766,10 @@ class WhatsAppMessage(Document):
             )
 
             permission = refresh_permission_state(
-                str(self.to or ""), self.whatsapp_account)
+                str(self.to or ""), self.whatsapp_account,
+                str(self.get("recipient") or ""),
+                str(self.get("contact_profile") or "") or None,
+            )
             if permission_is_active(permission):
                 permission_status = getattr(
                     permission, "permission_status", None)
@@ -668,7 +781,7 @@ class WhatsAppMessage(Document):
                         "permission. Use the outbound-call workflow instead "
                         "of sending another permission request."
                     ).format(
-                        format_number(self.to),
+                        format_number(self.to) or self.get("recipient"),
                         str(permission_status or "active").lower(),
                     ),
                     title=_("Call Permission Already Granted"),
@@ -677,13 +790,13 @@ class WhatsAppMessage(Document):
         components: list[dict[str, Any]] = []
         data: dict[str, Any] = {
             "messaging_product": "whatsapp",
-            "to": format_number(self.to),
             "type": "template",
             "template": {
                 "name": template.actual_name or template.template_name,
                 "language": {"code": template.language_code},
             },
         }
+        set_meta_recipient(data, to=self.to, recipient=self.get("recipient"))
 
         if template.sample_values:
             field_names = (template.field_names.split(",")
@@ -847,6 +960,43 @@ class WhatsAppMessage(Document):
                 message_id = first.get("id")
                 if isinstance(message_id, str) and message_id:
                     self.message_id = message_id
+
+        contacts = response_dict.get("contacts")
+        if isinstance(contacts, list) and contacts:
+            first_contact = contacts[0]
+            if isinstance(first_contact, dict):
+                returned_user_id = first_contact.get("user_id")
+                returned_parent_user_id = first_contact.get("parent_user_id")
+                returned_phone = first_contact.get("wa_id")
+                returned_profile = first_contact.get("profile")
+                returned_profile = (
+                    returned_profile
+                    if isinstance(returned_profile, dict)
+                    else {}
+                )
+                if returned_user_id:
+                    self.recipient_user_id = str(returned_user_id)
+                if returned_parent_user_id:
+                    self.recipient_parent_user_id = str(
+                        returned_parent_user_id
+                    )
+                if returned_phone and not self.to:
+                    self.to = format_number(str(returned_phone))
+                if returned_user_id or returned_parent_user_id or returned_phone:
+                    profile = resolve_identity(
+                        whatsapp_account=str(self.whatsapp_account),
+                        identity={
+                            "phone": returned_phone,
+                            "user_id": returned_user_id,
+                            "parent_user_id": returned_parent_user_id,
+                            "username": (
+                                first_contact.get("username")
+                                or returned_profile.get("username")
+                            ),
+                            "profile_name": returned_profile.get("name"),
+                        },
+                    )
+                    self.contact_profile = profile.name
 
         if not self.message_id:
             frappe.throw(

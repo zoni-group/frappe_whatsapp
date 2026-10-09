@@ -6,6 +6,7 @@
  "engine": "InnoDB",
  "field_order": [
   "profile",
+  "whatsapp_account",
   "phone_number",
   "action",
   "consent_category",
@@ -28,12 +29,18 @@
    "reqd": 1
   },
   {
+   "fieldname": "whatsapp_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "WhatsApp Account",
+   "options": "WhatsApp Account"
+  },
+  {
    "description": "Phone number (for reference if profile deleted)",
    "fieldname": "phone_number",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Phone Number",
-   "reqd": 1
+   "label": "Phone Number"
   },
   {
    "description": "Type of consent change",
@@ -103,7 +110,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-02-05 16:48:40.459543",
+ "modified": "2026-10-01 16:08:16.360417",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Consent Log",

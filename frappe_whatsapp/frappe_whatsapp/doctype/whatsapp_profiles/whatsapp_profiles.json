@@ -8,11 +8,16 @@
   "profile_name",
   "column_break_wzto",
   "number",
+  "user_id",
+  "parent_user_id",
+  "username",
+  "identity_scope",
   "section_break_abeu",
   "contact",
   "column_break_qdww",
   "title",
   "whatsapp_account",
+  "merged_into",
   "consent_status_section",
   "consent_status",
   "section_break_grzi",
@@ -62,8 +67,35 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Number",
-   "reqd": 1,
-   "unique": 1
+   "search_index": 1
+  },
+  {
+   "fieldname": "user_id",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Business-scoped User ID",
+   "length": 191,
+   "search_index": 1
+  },
+  {
+   "fieldname": "parent_user_id",
+   "fieldtype": "Data",
+   "label": "Parent Business-scoped User ID",
+   "length": 191,
+   "search_index": 1
+  },
+  {
+   "fieldname": "username",
+   "fieldtype": "Data",
+   "label": "WhatsApp Username",
+   "length": 191
+  },
+  {
+   "fieldname": "identity_scope",
+   "fieldtype": "Data",
+   "label": "Identity Scope",
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "section_break_abeu",
@@ -91,6 +123,13 @@
    "fieldtype": "Link",
    "label": "WhatsApp Account",
    "options": "WhatsApp Account"
+  },
+  {
+   "fieldname": "merged_into",
+   "fieldtype": "Link",
+   "label": "Merged Into",
+   "options": "WhatsApp Profiles",
+   "read_only": 1
   },
   {
    "fieldname": "consent_status_section",
@@ -213,7 +252,6 @@
    "description": "ISO 639-1 code of the detected language (e.g. en, es, pt)",
    "fieldname": "detected_language",
    "fieldtype": "Data",
-   "in_list_view": 0,
    "label": "Detected Language Code"
   },
   {
@@ -227,7 +265,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Confidence score from the language detector (0–1)",
+   "description": "Confidence score from the language detector (0\u20131)",
    "fieldname": "language_detection_confidence",
    "fieldtype": "Float",
    "label": "Detection Confidence",
@@ -273,7 +311,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-03-31 16:46:58.115766",
+ "modified": "2026-10-01 16:25:01.679547",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Profiles",

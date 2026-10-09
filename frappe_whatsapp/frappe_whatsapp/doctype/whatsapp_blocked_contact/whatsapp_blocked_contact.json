@@ -1,12 +1,14 @@
 {
  "actions": [],
- "autoname": "format:{contact_number}-{whatsapp_account}",
+ "autoname": "hash",
  "creation": "2026-06-11 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "whatsapp_account",
+  "contact_profile",
   "contact_number",
+  "user_id",
   "is_blocked",
   "meta_status",
   "section_break_source",
@@ -39,7 +41,22 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Contact Number",
-   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "contact_profile",
+   "fieldtype": "Link",
+   "label": "WhatsApp Profile",
+   "options": "WhatsApp Profiles",
+   "search_index": 1
+  },
+  {
+   "description": "Regular business-scoped user ID. Parent IDs are not supported by Meta's block API.",
+   "fieldname": "user_id",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Business-scoped User ID",
+   "length": 191,
    "search_index": 1
   },
   {
@@ -131,11 +148,11 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-06-11 11:57:51.751048",
+ "modified": "2026-10-01 16:44:04.284847",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Blocked Contact",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

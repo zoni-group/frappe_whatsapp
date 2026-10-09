@@ -1,11 +1,12 @@
 {
  "actions": [],
- "autoname": "format:{contact_number}-{whatsapp_account}",
+ "autoname": "hash",
  "creation": "2026-01-21 16:15:50.417094",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "whatsapp_account",
+  "contact_profile",
   "contact_number",
   "last_source_app",
   "last_outgoing_message",
@@ -15,6 +16,7 @@
   {
    "fieldname": "whatsapp_account",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "WhatsApp Account",
    "options": "WhatsApp Account"
   },
@@ -22,6 +24,13 @@
    "fieldname": "contact_number",
    "fieldtype": "Data",
    "label": "Contact Number"
+  },
+  {
+   "fieldname": "contact_profile",
+   "fieldtype": "Link",
+   "label": "WhatsApp Profile",
+   "options": "WhatsApp Profiles",
+   "search_index": 1
   },
   {
    "fieldname": "last_source_app",
@@ -43,7 +52,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-01-22 11:06:21.061807",
+ "modified": "2026-10-01 16:23:55.445231",
  "modified_by": "Administrator",
  "module": "Frappe Whatsapp",
  "name": "WhatsApp Conversation Route",
