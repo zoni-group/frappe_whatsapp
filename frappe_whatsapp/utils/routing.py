@@ -36,8 +36,50 @@ class AttachmentFileData(TypedDict):
     is_private: bool | int
 
 
+class ConversationRouteData(TypedDict):
+    name: str
+    contact_profile: str | None
+    last_source_app: str | None
+
+
+class ConversationRouteAccountData(TypedDict):
+    name: str
+    whatsapp_client_app: str | None
+
+
 def _get_route_doc_name(*, whatsapp_account: str, contact_number: str) -> str:
     return f"{contact_number}-{whatsapp_account}"
+
+
+def _get_conversation_route(
+    *,
+    whatsapp_account: str,
+    contact_number: str,
+    contact_profile: str | None,
+    for_update: bool = False,
+) -> ConversationRouteData | None:
+    # Profile identities take precedence, but legacy routes may only have a
+    # phone (or still reference an earlier profile).
+    for field, value in (
+        ("contact_profile", contact_profile),
+        ("contact_number", contact_number),
+    ):
+        if not value:
+            continue
+        route = cast(
+            ConversationRouteData | None,
+            frappe.db.get_value(
+                ROUTE_DOCTYPE,
+                {"whatsapp_account": whatsapp_account, field: value},
+                cast(Any, ["name", "contact_profile", "last_source_app"]),
+                as_dict=True,
+                cache=False,
+                for_update=for_update,
+            ),
+        )
+        if route:
+            return route
+    return None
 
 
 def _upsert_conversation_route(
@@ -45,33 +87,67 @@ def _upsert_conversation_route(
     whatsapp_account: str,
     contact_number: str = "",
     contact_profile: str | None = None,
-    source_app: str,
+    source_app: str | None = None,
     last_outgoing_message: str | None = None,
     update_last_outgoing: bool = False,
-) -> None:
+) -> str | None:
     contact = format_number(contact_number)
-    if not (whatsapp_account and (contact or contact_profile) and source_app):
+    if not (whatsapp_account and (contact or contact_profile)):
         return
-    filters: dict[str, Any] = {"whatsapp_account": whatsapp_account}
-    filters[
-        "contact_profile" if contact_profile else "contact_number"
-    ] = contact_profile or contact
-    values: dict[str, Any] = {
-        "last_source_app": source_app,
-    }
+    if update_last_outgoing and not source_app:
+        return
+
+    # Lock an existing parent even when the route does not yet exist. This
+    # serializes phone-based and profile-only writers until the caller commits.
+    account = cast(
+        ConversationRouteAccountData | None,
+        frappe.db.get_value(
+            "WhatsApp Account",
+            whatsapp_account,
+            cast(Any, ["name", "whatsapp_client_app"]),
+            as_dict=True,
+            cache=False,
+            for_update=True,
+        ),
+    )
+    if not account:
+        raise frappe.DoesNotExistError(f"WhatsApp Account {whatsapp_account} not found")
+
+    # Locking reads see the latest committed route, including when this
+    # transaction established a repeatable-read snapshot before waiting.
+    existing = _get_conversation_route(
+        whatsapp_account=whatsapp_account,
+        contact_number=contact,
+        contact_profile=contact_profile,
+        for_update=True,
+    )
+    selected_app = (
+        existing.get("last_source_app")
+        if existing and not update_last_outgoing else None
+    ) or source_app or account["whatsapp_client_app"]
+    values: dict[str, Any] = {}
+    if selected_app and (
+        not existing or existing.get("last_source_app") != selected_app
+    ):
+        values["last_source_app"] = selected_app
     if update_last_outgoing:
         values["last_outgoing_message"] = last_outgoing_message
         values["last_outgoing_at"] = now_datetime()
 
-    existing = frappe.db.get_value(ROUTE_DOCTYPE, filters, "name")
     if existing:
-        frappe.db.set_value(
-            ROUTE_DOCTYPE,
-            existing,
-            values,
-            update_modified=False,
-        )
-        return
+        if contact_profile and not existing.get("contact_profile"):
+            values["contact_profile"] = contact_profile
+        if values:
+            frappe.db.set_value(
+                ROUTE_DOCTYPE,
+                existing["name"],
+                values,
+                update_modified=False,
+            )
+        return str(selected_app) if selected_app else None
+
+    if not selected_app:
+        return None
 
     doc = frappe.get_doc(
         {
@@ -89,6 +165,7 @@ def _upsert_conversation_route(
         }
     )
     doc.insert(ignore_permissions=True)
+    return str(selected_app)
 
 
 def set_last_sender_app(
@@ -116,15 +193,12 @@ def get_last_sender_app(
     contact = format_number(contact_number)
     if not (whatsapp_account and (contact or contact_profile)):
         return
-    last_app = frappe.db.get_value(
-        ROUTE_DOCTYPE,
-        {
-            "whatsapp_account": whatsapp_account,
-            ("contact_profile" if contact_profile else "contact_number"):
-                contact_profile or contact,
-        },
-        "last_source_app"
+    route = _get_conversation_route(
+        whatsapp_account=whatsapp_account,
+        contact_number=contact,
+        contact_profile=contact_profile,
     )
+    last_app = route.get("last_source_app") if route else None
     if not last_app:
         return None
     return str(last_app)
@@ -136,29 +210,11 @@ def resolve_incoming_routed_app(
     contact_number: str = "",
     contact_profile: str | None = None,
 ) -> str | None:
-    last_app = get_last_sender_app(
+    return _upsert_conversation_route(
         whatsapp_account=whatsapp_account,
         contact_number=contact_number,
         contact_profile=contact_profile,
     )
-    if last_app:
-        return last_app
-
-    default_app = frappe.db.get_value(
-        "WhatsApp Account",
-        whatsapp_account,
-        "whatsapp_client_app",
-    )
-    if not default_app:
-        return None
-
-    _upsert_conversation_route(
-        whatsapp_account=whatsapp_account,
-        contact_number=contact_number,
-        contact_profile=contact_profile,
-        source_app=str(default_app),
-    )
-    return str(default_app)
 
 
 def _get_attach_value(*, incoming_message_doc: WhatsAppMessage) -> str | None:
